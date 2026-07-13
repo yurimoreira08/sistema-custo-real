@@ -24,6 +24,10 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "supabaseUrl": "https://SEU_PROJECT_ID.supabase.co",
+      "supabaseAnonKey": "SUA_ANON_KEY_AQUI"
     }
   }
 }

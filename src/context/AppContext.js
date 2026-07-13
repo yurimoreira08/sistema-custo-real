@@ -9,6 +9,7 @@ import {
   fetchDashboardStats,
   fetchDashboardDetails
 } from '../database/db';
+import { checkNetworkAndSync } from '../database/syncService';
 
 const AppContext = createContext();
 
@@ -41,6 +42,10 @@ export function AppProvider({ children }) {
     async function setupDb() {
       await initializeDatabase();
       setDbReady(true);
+      // Processar fila de sync pendente (operações offline anteriores)
+      checkNetworkAndSync().catch(err =>
+        console.warn('[AppContext] Erro no sync inicial:', err)
+      );
     }
     setupDb();
   }, []);

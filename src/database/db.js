@@ -1,14 +1,5 @@
-import * as SQLite from 'expo-sqlite';
-
-let dbInstance = null;
-
-// Retorna ou inicializa a instância do banco de dados de forma assíncrona
-export async function getDb() {
-  if (!dbInstance) {
-    dbInstance = await SQLite.openDatabaseAsync('mercado_manager.db');
-  }
-  return dbInstance;
-}
+import { initSyncQueue, syncOrEnqueue } from './syncService';
+import { getDb } from './dbInstance';
 
 // Inicializa a estrutura de tabelas e insere dados padrão caso o banco esteja vazio
 export async function initializeDatabase() {
@@ -86,6 +77,9 @@ export async function initializeDatabase() {
         percentual_lucro REAL NOT NULL
       );
     `);
+
+    // Criar fila de sincronização Supabase (offline-first)
+    await initSyncQueue();
 
     // --- SEEDING INICIAL DE DADOS ---
 
@@ -199,9 +193,11 @@ export async function fetchProducts() {
 // Adicionar ou atualizar produto
 export async function saveProduct(product) {
   const db = await getDb();
+  let result;
+
   if (product.id) {
     // Atualizar produto existente
-    return await db.runAsync(
+    result = await db.runAsync(
       'UPDATE Produto SET nome = ?, marca = ?, codigo_barras = ?, categoria = ?, preco_custo = ?, preco_venda = ?, estoque = ?, estoque_minimo = ? WHERE id = ?;',
       [
         product.nome,
@@ -215,9 +211,21 @@ export async function saveProduct(product) {
         product.id
       ]
     );
+    // Sincronizar com Supabase (offline-first)
+    await syncOrEnqueue('Produto', 'upsert', {
+      id: product.id,
+      nome: product.nome,
+      marca: product.marca || null,
+      codigo_barras: product.codigo_barras || null,
+      categoria: product.categoria || 'Outros',
+      preco_custo: product.preco_custo,
+      preco_venda: product.preco_venda,
+      estoque: product.estoque,
+      estoque_minimo: product.estoque_minimo,
+    });
   } else {
     // Inserir novo produto
-    return await db.runAsync(
+    result = await db.runAsync(
       'INSERT INTO Produto (nome, marca, codigo_barras, categoria, preco_custo, preco_venda, estoque, estoque_minimo) VALUES (?, ?, ?, ?, ?, ?, ?, ?);',
       [
         product.nome,
@@ -230,13 +238,30 @@ export async function saveProduct(product) {
         product.estoque_minimo
       ]
     );
+    // Sincronizar com Supabase (offline-first)
+    await syncOrEnqueue('Produto', 'upsert', {
+      id: result.lastInsertRowId,
+      nome: product.nome,
+      marca: product.marca || null,
+      codigo_barras: product.codigo_barras || null,
+      categoria: product.categoria || 'Outros',
+      preco_custo: product.preco_custo,
+      preco_venda: product.preco_venda,
+      estoque: product.estoque,
+      estoque_minimo: product.estoque_minimo,
+    });
   }
+
+  return result;
 }
 
 // Excluir produto
 export async function deleteProduct(id) {
   const db = await getDb();
-  return await db.runAsync('DELETE FROM Produto WHERE id = ?;', [id]);
+  const result = await db.runAsync('DELETE FROM Produto WHERE id = ?;', [id]);
+  // Sincronizar deleção com Supabase (offline-first)
+  await syncOrEnqueue('Produto', 'delete', { id });
+  return result;
 }
 
 // Obter as configurações globais de split
@@ -253,10 +278,18 @@ export async function fetchSettings() {
 // Salvar/atualizar configurações globais de split
 export async function saveSettings(cmv, opex, lucro) {
   const db = await getDb();
-  return await db.runAsync(
+  const result = await db.runAsync(
     'UPDATE Configuracoes SET percentual_cmv = ?, percentual_opex = ?, percentual_lucro = ? WHERE id = 1;',
     [cmv, opex, lucro]
   );
+  // Sincronizar com Supabase (offline-first)
+  await syncOrEnqueue('Configuracoes', 'upsert', {
+    id: 1,
+    percentual_cmv: cmv,
+    percentual_opex: opex,
+    percentual_lucro: lucro,
+  });
+  return result;
 }
 
 // Registrar uma venda aplicando split automático (RN01) e bloqueio de estoque (RN02)
@@ -308,6 +341,41 @@ export async function registerSale(cartItems, splitPercentages) {
         'INSERT INTO ItensVenda (venda_id, produto_id, quantidade, preco_unitario, preco_custo_unitario) VALUES (?, ?, ?, ?, ?);',
         [vendaId, item.id, item.quantidade, item.preco_venda, item.preco_custo]
       );
+    }
+
+    // Sincronizar a Venda e seus Itens com o Supabase (offline-first)
+    // Nota: a sincronização ocorre APÓS a transação SQLite ter sido commitada
+    await syncOrEnqueue('Venda', 'upsert', {
+      id: vendaId,
+      data_venda: now,
+      valor_total: valorTotal,
+      valor_cmv: valorCmv,
+      valor_opex: valorOpex,
+      valor_lucro: valorLucro,
+    });
+
+    for (const item of cartItems) {
+      await syncOrEnqueue('ItensVenda', 'upsert', {
+        venda_id: vendaId,
+        produto_id: item.id,
+        quantidade: item.quantidade,
+        preco_unitario: item.preco_venda,
+        preco_custo_unitario: item.preco_custo,
+      });
+      // Sincronizar estoque atualizado do produto
+      const estoqueAtualizado = item.quantidade;
+      await syncOrEnqueue('Produto', 'upsert', {
+        id: item.id,
+        nome: item.nome,
+        marca: item.marca || null,
+        codigo_barras: item.codigo_barras || null,
+        categoria: item.categoria || 'Outros',
+        preco_custo: item.preco_custo,
+        preco_venda: item.preco_venda,
+        estoque_minimo: item.estoque_minimo ?? 0,
+        // O estoque real está no SQLite; buscamos o valor atualizado
+        estoque: (item.estoque ?? 0) - estoqueAtualizado,
+      });
     }
 
     return vendaId;
