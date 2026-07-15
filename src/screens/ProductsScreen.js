@@ -11,18 +11,23 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
-  Dimensions
+  Dimensions,
+  ActivityIndicator
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useApp } from '../context/AppContext';
 import { saveProduct, deleteProduct } from '../database/db';
 import { Ionicons } from '@expo/vector-icons';
+import BarcodeScannerModal from '../components/BarcodeScannerModal';
+import { suggestPrice } from '../utils/pricing';
+import { feedbackFound, feedbackNotFound } from '../utils/scanFeedback';
+import SyncBadge from '../components/SyncBadge';
 
 const CATEGORIAS = ['Laticínios', 'Mercearia', 'Bebidas', 'Higiene', 'Limpeza', 'Outros'];
 
 export default function ProductsScreen() {
-  const { products, logout, refreshData } = useApp();
+  const { products, logout, refreshData, settings } = useApp();
   
   // Filtros
   const [search, setSearch] = useState('');
@@ -32,6 +37,7 @@ export default function ProductsScreen() {
   // Modal
   const [modalVisible, setModalVisible] = useState(false);
   const [showFormCategoryDropdown, setShowFormCategoryDropdown] = useState(false);
+  const [scannerVisible, setScannerVisible] = useState(false);
   
   // Estado do formulário
   const [productId, setProductId] = useState(null);
@@ -43,11 +49,21 @@ export default function ProductsScreen() {
   const [precoVenda, setPrecoVenda] = useState('');
   const [estoque, setEstoque] = useState('');
   const [estoqueMinimo, setEstoqueMinimo] = useState('');
+  const [isFetchingApi, setIsFetchingApi] = useState(false);
 
   // Métricas para os 3 cards do topo (calculadas de forma reativa a partir do SQLite products)
   const totalProdutos = products.length;
   const estoqueBaixo = products.filter(p => p.estoque <= p.estoque_minimo).length;
   const estoqueNormal = totalProdutos - estoqueBaixo;
+
+  // Sugestão de preço de venda a partir do custo digitado (usa o split configurado)
+  const priceSuggestion = suggestPrice((precoCusto || '').replace(',', '.'), settings);
+  const precoVendaNum = parseFloat((precoVenda || '').replace(',', '.'));
+  const belowTarget =
+    priceSuggestion.valido &&
+    Number.isFinite(precoVendaNum) &&
+    precoVendaNum > 0 &&
+    precoVendaNum < priceSuggestion.sugerido - 0.005;
 
   // Filtragem
   const filteredProducts = products.filter(p => {
@@ -175,6 +191,234 @@ export default function ProductsScreen() {
     setShowFormCategoryDropdown(false);
   };
 
+  // Gera um código PLU sequencial simples (ex.: 101, 102...) para produtos sem código
+  // de fábrica (frutas, legumes, padaria). Considera apenas códigos numéricos curtos
+  // (até 4 dígitos) para não colidir com EAN-13, e nunca inicia abaixo de 101.
+  const generateAutoCode = () => {
+    const shortNumericCodes = products
+      .map(p => (p.codigo_barras || '').trim())
+      .filter(c => /^\d{1,4}$/.test(c))
+      .map(c => parseInt(c, 10));
+
+    const maxCode = shortNumericCodes.length > 0 ? Math.max(...shortNumericCodes) : 100;
+    const nextCode = Math.max(maxCode + 1, 101);
+    setCodigo(String(nextCode));
+  };
+
+  // Função auxiliar de codificação Base64 para ambientes sem btoa global (React Native / Hermes)
+  const encodeBase64 = (str) => {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    let encoded = '';
+    let i = 0;
+    while (i < str.length) {
+      const c1 = str.charCodeAt(i++);
+      const c2 = i < str.length ? str.charCodeAt(i++) : NaN;
+      const c3 = i < str.length ? str.charCodeAt(i++) : NaN;
+      
+      const byte1 = c1 >> 2;
+      const byte2 = ((c1 & 3) << 4) | (isNaN(c2) ? 0 : c2 >> 4);
+      const byte3 = isNaN(c2) ? 64 : ((c2 & 15) << 2) | (isNaN(c3) ? 0 : c3 >> 6);
+      const byte4 = isNaN(c3) ? 64 : c3 & 63;
+      
+      encoded += chars.charAt(byte1) + chars.charAt(byte2) + 
+                 (byte3 === 64 ? '=' : chars.charAt(byte3)) + 
+                 (byte4 === 64 ? '=' : chars.charAt(byte4));
+    }
+    return encoded;
+  };
+
+  // Busca dados de produto na API do OSCBR (RSC Sistemas) ou na base do Open Food Facts (fallback)
+  const fetchProductFromApi = async (barcode) => {
+    if (!barcode || barcode.trim().length < 8) {
+      Alert.alert('Código inválido', 'O código de barras para busca automática deve ter pelo menos 8 dígitos.');
+      return;
+    }
+
+    setIsFetchingApi(true);
+    let productFound = false;
+    let oscbrErrorMsg = null;
+
+    // Verificar se as credenciais do OSCBR estão configuradas
+    const hasOscbrCredentials = settings?.oscbr_usuario?.trim() && settings?.oscbr_senha?.trim();
+
+    if (hasOscbrCredentials) {
+      try {
+        console.log('Tentando buscar dados no OSCBR...');
+        const credentials = `${settings.oscbr_usuario.trim()}:${settings.oscbr_senha.trim()}`;
+        const base64Credentials = encodeBase64(credentials);
+
+        // 1. Obter Token do OSCBR (v3)
+        const tokenResponse = await fetch('https://gtin.rscsistemas.com.br/api/v3/oauth/token', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Basic ${base64Credentials}`,
+            'Accept': 'application/json'
+          }
+        });
+
+        if (tokenResponse.ok) {
+          const tokenData = await tokenResponse.json();
+          const token = tokenData.token;
+
+          if (token) {
+            // 2. Consulta de Produto (GTIN)
+            const productResponse = await fetch(`https://gtin.rscsistemas.com.br/api/v3/gtin/${barcode.trim()}`, {
+              method: 'GET',
+              headers: {
+                'Authorization': `Bearer ${token}`,
+                'Accept': 'application/json'
+              }
+            });
+
+            if (productResponse.ok) {
+              const prodData = await productResponse.json();
+              if (prodData && prodData.nome) {
+                const fetchedNome = prodData.nome.trim();
+                const fetchedMarca = prodData.marca ? prodData.marca.trim() : '';
+                
+                // Categorização inteligente
+                let fetchedCategoria = 'Outros';
+                const categoriesStr = ((prodData.categoria || '') + ' ' + fetchedNome).toLowerCase();
+                
+                const isDairy = categoriesStr.includes('laticínios') || categoriesStr.includes('dairy') || categoriesStr.includes('leite') || categoriesStr.includes('queijo') || categoriesStr.includes('yogurt') || categoriesStr.includes('iogurte') || categoriesStr.includes('manteiga');
+                const isBeverage = categoriesStr.includes('bebidas') || categoriesStr.includes('beverages') || categoriesStr.includes('suco') || categoriesStr.includes('refrigerante') || categoriesStr.includes('cerva') || categoriesStr.includes('cerveja') || categoriesStr.includes('vinho') || categoriesStr.includes('água') || categoriesStr.includes('agua') || categoriesStr.includes('natar') || categoriesStr.includes('nectar');
+                const isHygiene = categoriesStr.includes('higiene') || categoriesStr.includes('hygiene') || categoriesStr.includes('sabonete') || categoriesStr.includes('shampoo') || categoriesStr.includes('dental') || categoriesStr.includes('creme dental') || categoriesStr.includes('desodorante') || categoriesStr.includes('fio dental');
+                const isCleaning = categoriesStr.includes('limpeza') || categoriesStr.includes('cleaning') || categoriesStr.includes('detergente') || categoriesStr.includes('amaciante') || categoriesStr.includes('sabão em pó') || categoriesStr.includes('sabao em po') || categoriesStr.includes('desinfetante') || categoriesStr.includes('saponáceo') || categoriesStr.includes('lustra móveis');
+                
+                if (isDairy) {
+                  fetchedCategoria = 'Laticínios';
+                } else if (isBeverage) {
+                  fetchedCategoria = 'Bebidas';
+                } else if (isHygiene) {
+                  fetchedCategoria = 'Higiene';
+                } else if (isCleaning) {
+                  fetchedCategoria = 'Limpeza';
+                } else {
+                  fetchedCategoria = 'Mercearia';
+                }
+
+                setNome(fetchedNome);
+                setMarca(fetchedMarca);
+                setCategoria(fetchedCategoria);
+                productFound = true;
+
+                Alert.alert(
+                  'Sucesso (OSCBR)',
+                  `Produto encontrado na base OSCBR!\n\nNome: ${fetchedNome}\nMarca: ${fetchedMarca || 'Não informada'}\nCategoria sugerida: ${fetchedCategoria}`
+                );
+              } else {
+                oscbrErrorMsg = 'Produto não encontrado na base do OSCBR.';
+              }
+            } else {
+              oscbrErrorMsg = `Produto não localizado (status: ${productResponse.status}).`;
+            }
+          } else {
+            oscbrErrorMsg = 'Falha ao processar token de autenticação.';
+          }
+        } else {
+          let errorDetail = 'Credenciais inválidas';
+          try {
+            const errorJson = await tokenResponse.json();
+            errorDetail = errorJson.erro || errorJson.error_description || errorJson.message || JSON.stringify(errorJson);
+          } catch (e) {
+            try {
+              errorDetail = await tokenResponse.text();
+            } catch (e2) {}
+          }
+          console.warn('Erro ao autenticar no OSCBR (status:', tokenResponse.status, '):', errorDetail);
+          oscbrErrorMsg = `Erro ${tokenResponse.status} (Autenticação inválida)`;
+        }
+      } catch (oscbrError) {
+        console.error('Erro na integração com OSCBR:', oscbrError);
+        oscbrErrorMsg = 'Falha de conexão com o servidor (Erro de Rede).';
+      }
+    }
+
+    // Fallback: Se não encontrou no OSCBR (ou se não tem credenciais configuradas), tenta Open Food Facts
+    if (!productFound) {
+      try {
+        console.log('Tentando buscar dados no Open Food Facts (fallback)...');
+        const response = await fetch(`https://world.openfoodfacts.org/api/v0/product/${barcode.trim()}.json`);
+        
+        const data = await response.json();
+        if (data && data.status === 1 && data.product) {
+          const prod = data.product;
+          const fetchedNome = prod.product_name || prod.product_name_pt || prod.product_name_en || '';
+          const fetchedMarca = prod.brands || '';
+          
+          // Tentar categorizar
+          let fetchedCategoria = 'Outros';
+          const categoriesStr = ((prod.categories || '') + ' ' + (prod.categories_tags || []).join(' ')).toLowerCase();
+          
+          const isDairy = categoriesStr.includes('laticínios') || categoriesStr.includes('dairy') || categoriesStr.includes('leite') || categoriesStr.includes('queijo') || categoriesStr.includes('yogurt') || categoriesStr.includes('iogurte') || categoriesStr.includes('manteiga');
+          const isBeverage = categoriesStr.includes('bebidas') || categoriesStr.includes('beverages') || categoriesStr.includes('suco') || categoriesStr.includes('refrigerante') || categoriesStr.includes('cerva') || categoriesStr.includes('cerveja') || categoriesStr.includes('vinho') || categoriesStr.includes('água') || categoriesStr.includes('agua') || categoriesStr.includes('natar') || categoriesStr.includes('nectar');
+          const isHygiene = categoriesStr.includes('higiene') || categoriesStr.includes('hygiene') || categoriesStr.includes('sabonete') || categoriesStr.includes('shampoo') || categoriesStr.includes('dental') || categoriesStr.includes('creme dental') || categoriesStr.includes('desodorante') || categoriesStr.includes('fio dental');
+          const isCleaning = categoriesStr.includes('limpeza') || categoriesStr.includes('cleaning') || categoriesStr.includes('detergente') || categoriesStr.includes('amaciante') || categoriesStr.includes('sabão em pó') || categoriesStr.includes('sabao em po') || categoriesStr.includes('desinfetante') || categoriesStr.includes('saponáceo') || categoriesStr.includes('lustra móveis');
+          
+          if (isDairy) {
+            fetchedCategoria = 'Laticínios';
+          } else if (isBeverage) {
+            fetchedCategoria = 'Bebidas';
+          } else if (isHygiene) {
+            fetchedCategoria = 'Higiene';
+          } else if (isCleaning) {
+            fetchedCategoria = 'Limpeza';
+          } else {
+            fetchedCategoria = 'Mercearia';
+          }
+          
+          if (fetchedNome) setNome(fetchedNome);
+          if (fetchedMarca) setMarca(fetchedMarca);
+          setCategoria(fetchedCategoria);
+          productFound = true;
+          
+          let alertMsg = `Produto encontrado na base Open Food Facts!\n\nNome: ${fetchedNome}\nMarca: ${fetchedMarca || 'Não informada'}\nCategoria sugerida: ${fetchedCategoria}`;
+          
+          if (!hasOscbrCredentials) {
+            alertMsg += `\n\n💡 Dica: Configure suas credenciais do OSCBR na tela de Relatórios para consultar uma base brasileira mais abrangente.`;
+          }
+
+          Alert.alert('Sucesso (Open Food Facts)', alertMsg);
+        } else {
+          // Ambos falharam ou produto não encontrado
+          let errorMsg = 'Produto não encontrado nas bases de dados.';
+          if (hasOscbrCredentials && oscbrErrorMsg) {
+            errorMsg = `Não foi possível encontrar o produto.\n\n- OSCBR: ${oscbrErrorMsg}\n- Open Food Facts: Produto não cadastrado.`;
+          } else {
+            errorMsg = 'Produto não encontrado na base do Open Food Facts. Digite os dados manualmente.\n\n💡 Dica: Cadastre-se em gtin.rscsistemas.com.br e configure suas credenciais na tela de Relatórios para buscar também na base do OSCBR.';
+          }
+          Alert.alert('Não encontrado', errorMsg);
+        }
+      } catch (error) {
+        console.error('Erro ao buscar produto na API de fallback:', error);
+        let errorMsg = 'Não foi possível conectar às bases públicas para obter os dados.';
+        if (hasOscbrCredentials && oscbrErrorMsg) {
+          errorMsg += `\n\nDetalhe da tentativa OSCBR:\n${oscbrErrorMsg}`;
+        }
+        Alert.alert('Erro de Conexão', errorMsg);
+      }
+    }
+
+    if (productFound) {
+      feedbackFound();
+    } else {
+      feedbackNotFound();
+    }
+
+    setIsFetchingApi(false);
+  };
+
+  // Recebe o código lido pela câmera no cadastro e fecha o scanner (evita duplicação).
+  const handleScanFormCode = (code) => {
+    const trimmedCode = code.trim();
+    setCodigo(trimmedCode);
+    setScannerVisible(false);
+    
+    if (trimmedCode.length >= 8) {
+      fetchProductFromApi(trimmedCode);
+    }
+  };
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <StatusBar style="light" />
@@ -183,11 +427,14 @@ export default function ProductsScreen() {
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <Ionicons name="cart" size={24} color="#FFF" style={{ marginRight: 8 }} />
-          <Text style={styles.headerTitle}>Mercado Manager</Text>
+          <Text style={styles.headerTitle} numberOfLines={1}>Mercado Manager</Text>
         </View>
-        <TouchableOpacity style={styles.logoutBtn} onPress={logout}>
-          <Text style={styles.logoutText}>Sair</Text>
-        </TouchableOpacity>
+        <View style={styles.headerRightGroup}>
+          <SyncBadge />
+          <TouchableOpacity style={styles.logoutBtn} onPress={logout}>
+            <Text style={styles.logoutText}>Sair</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContainer} keyboardShouldPersistTaps="handled">
@@ -366,15 +613,40 @@ export default function ProductsScreen() {
               {/* Grid Linha 1: Código e Categoria */}
               <View style={styles.formRow}>
                 <View style={[styles.formCol, { marginRight: 10 }]}>
-                  <Text style={styles.formLabel}>Código</Text>
-                  <TextInput
-                    style={styles.formInput}
-                    placeholder="Ex: 001"
-                    placeholderTextColor="#A0AEC0"
-                    value={codigo}
-                    onChangeText={setCodigo}
-                    keyboardType="numeric"
-                  />
+                  <View style={styles.formLabelRow}>
+                    <Text style={styles.formLabel}>Código</Text>
+                    <TouchableOpacity onPress={generateAutoCode} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                      <Text style={styles.generateCodeText}>Gerar</Text>
+                    </TouchableOpacity>
+                  </View>
+                  <View style={styles.codeInputRow}>
+                    <TextInput
+                      style={[styles.formInput, { flex: 1 }]}
+                      placeholder="Ex: 001"
+                      placeholderTextColor="#A0AEC0"
+                      value={codigo}
+                      onChangeText={setCodigo}
+                      keyboardType="numeric"
+                    />
+                    {/* Buscar código na API pública */}
+                    {codigo.trim().length >= 8 && (
+                      <TouchableOpacity 
+                        style={[styles.codeSearchBtn, isFetchingApi && { backgroundColor: '#A0AEC0' }]} 
+                        onPress={() => fetchProductFromApi(codigo)}
+                        disabled={isFetchingApi}
+                      >
+                        {isFetchingApi ? (
+                          <ActivityIndicator size="small" color="#FFF" />
+                        ) : (
+                          <Ionicons name="search" size={20} color="#FFF" />
+                        )}
+                      </TouchableOpacity>
+                    )}
+                    {/* Ler código de barras pela câmera */}
+                    <TouchableOpacity style={styles.codeScanBtn} onPress={() => setScannerVisible(true)}>
+                      <Ionicons name="barcode-outline" size={22} color="#FFF" />
+                    </TouchableOpacity>
+                  </View>
                 </View>
 
                 {/* Dropdown de Categoria no Formulário */}
@@ -459,6 +731,24 @@ export default function ProductsScreen() {
                 </View>
               </View>
 
+              {priceSuggestion.valido && (
+                <TouchableOpacity
+                  style={styles.priceSuggestionChip}
+                  onPress={() => setPrecoVenda(priceSuggestion.sugerido.toFixed(2))}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.priceSuggestionMain}>
+                    💡 Sugerido: {formatCurrency(priceSuggestion.sugerido)} (tocar p/ usar)
+                  </Text>
+                  <Text style={styles.priceSuggestionBreakdown}>
+                    CMV {formatCurrency(priceSuggestion.cmvValor)} · OpEx {formatCurrency(priceSuggestion.opexValor)} · Lucro {formatCurrency(priceSuggestion.lucroValor)}
+                  </Text>
+                </TouchableOpacity>
+              )}
+              {belowTarget && (
+                <Text style={styles.priceWarning}>⚠️ Preço abaixo da margem alvo</Text>
+              )}
+
               {/* Grid Linha 4: Estoque e Mínimo */}
               <View style={styles.formRow}>
                 <View style={[styles.formCol, { marginRight: 10 }]}>
@@ -502,6 +792,18 @@ export default function ProductsScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      {/* Modal de leitura de código de barras por câmera (cadastro) */}
+      <Modal
+        visible={scannerVisible}
+        animationType="slide"
+        onRequestClose={() => setScannerVisible(false)}
+      >
+        <BarcodeScannerModal
+          onScan={handleScanFormCode}
+          onClose={() => setScannerVisible(false)}
+        />
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -520,6 +822,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   headerLeft: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
   },
@@ -527,6 +830,7 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: 'bold',
     color: '#FFF',
+    flexShrink: 1,
   },
   logoutBtn: {
     backgroundColor: 'rgba(255, 255, 255, 0.2)',
@@ -538,6 +842,11 @@ const styles = StyleSheet.create({
     color: '#FFF',
     fontSize: 14,
     fontWeight: 'bold',
+  },
+  headerRightGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
   scrollContainer: {
     backgroundColor: '#F0F4F8',
@@ -871,6 +1180,38 @@ const styles = StyleSheet.create({
     color: '#4A5568',
     marginBottom: 8,
   },
+  formLabelRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  generateCodeText: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#1E63EC',
+    marginBottom: 8,
+  },
+  codeInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  codeScanBtn: {
+    backgroundColor: '#1E63EC',
+    width: 48,
+    height: 48,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  codeSearchBtn: {
+    backgroundColor: '#319795',
+    width: 48,
+    height: 48,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   formInput: {
     backgroundColor: '#F7FAFC',
     borderRadius: 8,
@@ -954,5 +1295,30 @@ const styles = StyleSheet.create({
     color: '#FFF',
     fontSize: 15,
     fontWeight: 'bold',
+  },
+  priceSuggestionChip: {
+    backgroundColor: '#EBF8FF',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#BEE3F8',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginBottom: 12,
+  },
+  priceSuggestionMain: {
+    color: '#2B6CB0',
+    fontSize: 13,
+    fontWeight: 'bold',
+  },
+  priceSuggestionBreakdown: {
+    color: '#4A5568',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  priceWarning: {
+    color: '#C53030',
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 12,
   },
 });

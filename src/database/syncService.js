@@ -59,6 +59,20 @@ export async function enqueueSyncOperation(tableName, operation, payload) {
   }
 }
 
+/**
+ * Conta operações pendentes na fila de sincronização.
+ * Retorna 0 se a tabela ainda não existir (best-effort).
+ */
+export async function getSyncQueueCount() {
+  try {
+    const db = await getDb();
+    const rows = await db.getAllAsync('SELECT COUNT(*) AS c FROM sync_queue;');
+    return rows[0]?.c ?? 0;
+  } catch (e) {
+    return 0;
+  }
+}
+
 // ─── Sincronização com Supabase ───────────────────────────────────────────────
 
 /**

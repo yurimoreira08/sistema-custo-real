@@ -14,6 +14,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useApp } from '../context/AppContext';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
+import SyncBadge from '../components/SyncBadge';
 
 export default function DashboardScreen() {
   const { user, logout, dashboardDetails, refreshData } = useApp();
@@ -85,13 +86,16 @@ export default function DashboardScreen() {
       
       {/* Header Bar */}
       <View style={styles.header}>
-        <View style={styles.headerLeft}>
+        <View style={[styles.headerLeft, { flex: 1 }]}>
           <Ionicons name="cart" size={24} color="#FFF" style={{ marginRight: 8 }} />
-          <Text style={styles.headerTitle}>Mercado Manager</Text>
+          <Text style={[styles.headerTitle, { flexShrink: 1 }]} numberOfLines={1}>Mercado Manager</Text>
         </View>
-        <TouchableOpacity style={styles.logoutBtn} onPress={logout}>
-          <Text style={styles.logoutText}>Sair</Text>
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          <SyncBadge />
+          <TouchableOpacity style={styles.logoutBtn} onPress={logout}>
+            <Text style={styles.logoutText}>Sair</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       <ScrollView 
@@ -195,9 +199,9 @@ export default function DashboardScreen() {
                     <View style={styles.saleIconBg}>
                       <Ionicons name="fast-food-outline" size={20} color="#1E63EC" />
                     </View>
-                    <View>
-                      <Text style={styles.saleItemTitle}>{item.descricaoItens}</Text>
-                      <Text style={styles.saleItemSubtitle}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.saleItemTitle} numberOfLines={1}>{item.descricaoItens}</Text>
+                      <Text style={styles.saleItemSubtitle} numberOfLines={1}>
                         {getTimeElapsed(item.data_venda)} — {item.totalQtdItens} itens
                       </Text>
                     </View>
@@ -423,8 +427,11 @@ const styles = StyleSheet.create({
     borderBottomColor: '#EDF2F7',
   },
   saleItemLeft: {
+    flex: 1,
+    minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
+    marginRight: 12,
   },
   saleIconBg: {
     width: 36,
@@ -449,5 +456,8 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: 'bold',
     color: '#2F855A', // Verde de faturamento
+    flexShrink: 0,
+    marginLeft: 8,
+    textAlign: 'right',
   },
 });

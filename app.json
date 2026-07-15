@@ -26,8 +26,17 @@
       "favicon": "./assets/favicon.png"
     },
     "extra": {
-      "supabaseUrl": "https://SEU_PROJECT_ID.supabase.co",
-      "supabaseAnonKey": "SUA_ANON_KEY_AQUI"
-    }
+      "supabaseUrl": "https://oshesvkmupssuivhpntd.supabase.co",
+      "supabaseAnonKey": "sb_publishable_ewpiWouTZfUXYWwavUCUqQ_pA4NFVyY"
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Permita que o $(PRODUCT_NAME) acesse a câmera para ler códigos de barras."
+        }
+      ],
+      "expo-audio"
+    ]
   }
 }

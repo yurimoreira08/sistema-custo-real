@@ -8,7 +8,7 @@ node_modules/
 dist/
 web-build/
 expo-env.d.ts
-
+/docs
 # Native
 .kotlin/
 *.orig.*
@@ -20,6 +20,7 @@ expo-env.d.ts
 
 # Metro
 .metro-health-check*
+CODIGO_DE_BARRAS.md
 
 # debug
 npm-debug.*

@@ -17,6 +17,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useApp } from '../context/AppContext';
 import { fetchReportData } from '../database/db';
 import { Ionicons } from '@expo/vector-icons';
+import SyncBadge from '../components/SyncBadge';
 
 export default function ReportsScreen() {
   const { logout, settings, updateSettings, refreshData } = useApp();
@@ -36,6 +37,8 @@ export default function ReportsScreen() {
   const [cmvPercent, setCmvPercent] = useState('');
   const [opexPercent, setOpexPercent] = useState('');
   const [lucroPercent, setLucroPercent] = useState('');
+  const [oscbrUsuario, setOscbrUsuario] = useState('');
+  const [oscbrSenha, setOscbrSenha] = useState('');
 
   // Carregar dados toda vez que o período mudar ou quando o contexto atualizar
   useEffect(() => {
@@ -48,6 +51,8 @@ export default function ReportsScreen() {
       setCmvPercent(settings.percentual_cmv.toString());
       setOpexPercent(settings.percentual_opex.toString());
       setLucroPercent(settings.percentual_lucro.toString());
+      setOscbrUsuario(settings.oscbr_usuario || '');
+      setOscbrSenha(settings.oscbr_senha || '');
     }
   }, [settings, settingsModalVisible]);
 
@@ -114,13 +119,13 @@ export default function ReportsScreen() {
     }
 
     try {
-      await updateSettings(cmv, opex, lucro);
-      Alert.alert('Sucesso', 'Configuração de split atualizada!');
+      await updateSettings(cmv, opex, lucro, oscbrUsuario.trim(), oscbrSenha.trim());
+      Alert.alert('Sucesso', 'Configurações atualizadas com sucesso!');
       setSettingsModalVisible(false);
       await refreshData();
       await loadReportDetails();
     } catch (error) {
-      Alert.alert('Erro', 'Não foi possível salvar.');
+      Alert.alert('Erro', 'Não foi possível salvar as configurações.');
     }
   };
 
@@ -139,8 +144,9 @@ export default function ReportsScreen() {
           <Text style={styles.headerTitle}>Mercado Manager</Text>
         </View>
         <View style={styles.headerRight}>
-          <TouchableOpacity 
-            style={styles.settingsHeaderBtn} 
+          <SyncBadge />
+          <TouchableOpacity
+            style={styles.settingsHeaderBtn}
             onPress={() => setSettingsModalVisible(true)}
           >
             <Ionicons name="settings-outline" size={22} color="#FFF" />
@@ -370,6 +376,43 @@ export default function ReportsScreen() {
                   />
                   <Text style={styles.inputSuffix}>%</Text>
                 </View>
+              </View>
+
+              {/* Credenciais da API OSCBR (RSC Sistemas) */}
+              <View style={{ marginTop: 16, paddingTop: 16, borderTopWidth: 1, borderTopColor: '#E2E8F0' }}>
+                <Text style={{ fontSize: 13, fontWeight: 'bold', color: '#1E63EC', marginBottom: 12 }}>
+                  🔑 Integração OSCBR (RSC Sistemas)
+                </Text>
+                
+                <View style={styles.formGroup}>
+                  <Text style={styles.formLabel}>Usuário OSCBR</Text>
+                  <View style={styles.inputWrapper}>
+                    <TextInput
+                      style={styles.formInput}
+                      value={oscbrUsuario}
+                      onChangeText={setOscbrUsuario}
+                      placeholder="Seu usuário cadastrado"
+                      autoCapitalize="none"
+                    />
+                  </View>
+                </View>
+
+                <View style={styles.formGroup}>
+                  <Text style={styles.formLabel}>Senha OSCBR</Text>
+                  <View style={styles.inputWrapper}>
+                    <TextInput
+                      style={styles.formInput}
+                      value={oscbrSenha}
+                      onChangeText={setOscbrSenha}
+                      placeholder="Sua senha cadastrada"
+                      secureTextEntry={true}
+                      autoCapitalize="none"
+                    />
+                  </View>
+                </View>
+                <Text style={{ fontSize: 11, color: '#718096', marginTop: -4, marginBottom: 12 }}>
+                  Cadastre-se em gtin.rscsistemas.com.br para obter credenciais da API.
+                </Text>
               </View>
 
               <View style={styles.statusRow}>

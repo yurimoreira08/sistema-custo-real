@@ -9,12 +9,20 @@ import {
   fetchDashboardStats,
   fetchDashboardDetails
 } from '../database/db';
-import { checkNetworkAndSync } from '../database/syncService';
+import { checkNetworkAndSync, getSyncQueueCount } from '../database/syncService';
+import { isSupabaseConfigured } from '../database/supabaseClient';
+import * as Network from 'expo-network';
 
 const AppContext = createContext();
 
 export function AppProvider({ children }) {
   const [dbReady, setDbReady] = useState(false);
+  const [syncStatus, setSyncStatus] = useState({
+    pendingCount: 0,
+    isOnline: true,
+    isSyncing: false,
+    configured: false,
+  });
   const [user, setUser] = useState(null);
   const [products, setProducts] = useState([]);
   const [settings, setSettings] = useState({ percentual_cmv: 60.0, percentual_opex: 20.0, percentual_lucro: 20.0 });
@@ -49,6 +57,14 @@ export function AppProvider({ children }) {
     }
     setupDb();
   }, []);
+
+  // Atualiza o status de sync depois que o banco estiver pronto e a cada 15s
+  useEffect(() => {
+    if (!dbReady) return;
+    refreshSyncStatus();
+    const id = setInterval(refreshSyncStatus, 15000);
+    return () => clearInterval(id);
+  }, [dbReady]);
 
   // Carregar dados gerais quando o banco estiver pronto ou quando o usuário logar
   useEffect(() => {
@@ -109,11 +125,33 @@ export function AppProvider({ children }) {
     setUser(null);
   };
 
-  const handleUpdateSettings = async (cmv, opex, lucro) => {
-    await saveSettings(cmv, opex, lucro);
+  const handleUpdateSettings = async (cmv, opex, lucro, oscbrUsuario = null, oscbrSenha = null) => {
+    await saveSettings(cmv, opex, lucro, oscbrUsuario, oscbrSenha);
     await loadSettings();
     await loadDashboardStats();
     await loadDashboardDetails();
+  };
+
+  const refreshSyncStatus = async () => {
+    try {
+      const configured = isSupabaseConfigured();
+      const pendingCount = await getSyncQueueCount();
+      let isOnline = true;
+      try {
+        const net = await Network.getNetworkStateAsync();
+        isOnline = !!(net.isConnected && net.isInternetReachable);
+      } catch (e) {}
+      setSyncStatus((prev) => ({ ...prev, configured, pendingCount, isOnline }));
+    } catch (e) {}
+  };
+
+  const forceSync = async () => {
+    setSyncStatus((prev) => ({ ...prev, isSyncing: true }));
+    try {
+      await checkNetworkAndSync();
+    } catch (e) {}
+    await refreshSyncStatus();
+    setSyncStatus((prev) => ({ ...prev, isSyncing: false }));
   };
 
   // Recarrega todos os dados do banco (útil após inserções ou atualizações)
@@ -122,6 +160,7 @@ export function AppProvider({ children }) {
     await loadSalesHistory();
     await loadDashboardStats();
     await loadDashboardDetails();
+    await refreshSyncStatus();
   };
 
   return (
@@ -138,7 +177,10 @@ export function AppProvider({ children }) {
         logout: handleLogout,
         updateSettings: handleUpdateSettings,
         refreshData,
-        loadProducts
+        loadProducts,
+        syncStatus,
+        forceSync,
+        refreshSyncStatus
       }}
     >
       {children}

@@ -1,26 +1,31 @@
 import React, { useState } from 'react';
-import { 
-  StyleSheet, 
-  Text, 
-  View, 
-  FlatList, 
-  TouchableOpacity, 
-  TextInput, 
-  Alert, 
+import {
+  StyleSheet,
+  Text,
+  View,
+  FlatList,
+  TouchableOpacity,
+  TextInput,
+  Alert,
   Platform,
-  ScrollView
+  ScrollView,
+  Modal
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useApp } from '../context/AppContext';
 import { registerSale } from '../database/db';
 import { Ionicons } from '@expo/vector-icons';
+import BarcodeScannerModal from '../components/BarcodeScannerModal';
+import { feedbackFound, feedbackNotFound } from '../utils/scanFeedback';
+import SyncBadge from '../components/SyncBadge';
 
 export default function NewSaleScreen() {
   const { products, settings, sales, refreshData } = useApp();
   const [cart, setCart] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearchResults, setShowSearchResults] = useState(false);
+  const [scannerVisible, setScannerVisible] = useState(false);
 
   // Calcula número da próxima venda baseado no histórico (ex: #0024 se vendas = 23)
   const nextSaleNum = `#${String(sales.length + 1).padStart(4, '0')}`;
@@ -137,9 +142,55 @@ export default function NewSaleScreen() {
     }
   };
 
+  // Busca um produto por código de barras exato (após trim), suportando EAN e PLUs curtos.
+  const findByBarcode = (code) => {
+    const cleanCode = code.trim();
+    if (!cleanCode) return null;
+    return products.find(p => p.codigo_barras && p.codigo_barras.trim() === cleanCode) || null;
+  };
+
   const handleSearchTextChange = (text) => {
     setSearchQuery(text);
+
+    // Auto-adição rápida para leitores físicos: se o texto digitado corresponder
+    // exatamente a um código de barras cadastrado, adiciona ao carrinho na hora.
+    const cleanCode = text.trim();
+    if (cleanCode.length >= 3) {
+      const exactMatch = findByBarcode(cleanCode);
+      if (exactMatch) {
+        feedbackFound();
+        handleSelectItem(exactMatch);
+        setSearchQuery(''); // Limpa o input para a próxima leitura imediata
+        setShowSearchResults(false);
+        return;
+      }
+    }
+
     setShowSearchResults(text.length > 0);
+  };
+
+  // Reforço para o Enter enviado pelo leitor físico ao final da leitura.
+  const handleSubmitEditing = () => {
+    const exactMatch = findByBarcode(searchQuery);
+    if (exactMatch) {
+      handleSelectItem(exactMatch);
+      setSearchQuery('');
+      setShowSearchResults(false);
+    }
+  };
+
+  // Recebe o código lido pela câmera. Ao identificar um produto, fecha o scanner
+  // para evitar leituras/adições duplicadas do mesmo código.
+  const handleScanCode = (code) => {
+    const product = findByBarcode(code);
+    if (product) {
+      feedbackFound();
+      handleSelectItem(product);
+      setScannerVisible(false);
+    } else {
+      feedbackNotFound();
+      Alert.alert('Produto não encontrado', `Nenhum produto cadastrado com o código "${code.trim()}".`);
+    }
   };
 
   const renderCartItem = ({ item }) => (
@@ -175,6 +226,7 @@ export default function NewSaleScreen() {
           <Text style={styles.headerTitle}>Nova Venda</Text>
         </View>
         <View style={styles.headerRight}>
+          <SyncBadge />
           <Text style={styles.ticketNumber}>{nextSaleNum}</Text>
           <TouchableOpacity 
             style={[styles.cancelBtn, cart.length === 0 && { opacity: 0.5 }]} 
@@ -199,12 +251,21 @@ export default function NewSaleScreen() {
               value={searchQuery}
               onChangeText={handleSearchTextChange}
               onFocus={() => setShowSearchResults(searchQuery.length > 0)}
+              onSubmitEditing={handleSubmitEditing}
+              returnKeyType="search"
+              blurOnSubmit={false}
+              autoCorrect={false}
+              autoCapitalize="none"
             />
             {searchQuery.length > 0 && (
-              <TouchableOpacity onPress={() => handleSearchTextChange('')}>
+              <TouchableOpacity onPress={() => handleSearchTextChange('')} style={{ marginLeft: 4 }}>
                 <Ionicons name="close-circle" size={18} color="#A0AEC0" />
               </TouchableOpacity>
             )}
+            {/* Botão de leitura por câmera */}
+            <TouchableOpacity style={styles.scanIconBtn} onPress={() => setScannerVisible(true)}>
+              <Ionicons name="barcode-outline" size={20} color="#FFF" />
+            </TouchableOpacity>
           </View>
 
           {/* Resultados da busca (Overlay suspenso dentro do card) */}
@@ -327,6 +388,18 @@ export default function NewSaleScreen() {
           </Text>
         </TouchableOpacity>
       </View>
+
+      {/* Modal de leitura por câmera */}
+      <Modal
+        visible={scannerVisible}
+        animationType="slide"
+        onRequestClose={() => setScannerVisible(false)}
+      >
+        <BarcodeScannerModal
+          onScan={handleScanCode}
+          onClose={() => setScannerVisible(false)}
+        />
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -414,6 +487,15 @@ const styles = StyleSheet.create({
     flex: 1,
     color: '#2D3748',
     fontSize: 15,
+  },
+  scanIconBtn: {
+    backgroundColor: '#1E63EC',
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 8,
   },
   searchResultsDropdown: {
     position: 'absolute',

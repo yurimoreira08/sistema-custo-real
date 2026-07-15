@@ -42,6 +42,9 @@ export async function initializeDatabase() {
       // A coluna já existe, ignorar erro
     }
 
+    // Índice para buscas instantâneas por código de barras (leitor físico e câmera)
+    await db.execAsync('CREATE INDEX IF NOT EXISTS idx_produto_codigo_barras ON Produto(codigo_barras);');
+
     // Criar Tabela: Venda
     await db.execAsync(`
       CREATE TABLE IF NOT EXISTS Venda (
@@ -74,9 +77,23 @@ export async function initializeDatabase() {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         percentual_cmv REAL NOT NULL,
         percentual_opex REAL NOT NULL,
-        percentual_lucro REAL NOT NULL
+        percentual_lucro REAL NOT NULL,
+        oscbr_usuario TEXT,
+        oscbr_senha TEXT
       );
     `);
+
+    // Migração segura para adicionar as colunas de credenciais OSCBR se a tabela já existir
+    try {
+      await db.execAsync('ALTER TABLE Configuracoes ADD COLUMN oscbr_usuario TEXT;');
+    } catch (e) {
+      // Já existe, ignora
+    }
+    try {
+      await db.execAsync('ALTER TABLE Configuracoes ADD COLUMN oscbr_senha TEXT;');
+    } catch (e) {
+      // Já existe, ignora
+    }
 
     // Criar fila de sincronização Supabase (offline-first)
     await initSyncQueue();
@@ -275,14 +292,15 @@ export async function fetchSettings() {
   return { percentual_cmv: 60.0, percentual_opex: 20.0, percentual_lucro: 20.0 };
 }
 
-// Salvar/atualizar configurações globais de split
-export async function saveSettings(cmv, opex, lucro) {
+// Salvar/atualizar configurações globais de split e credenciais da API OSCBR
+export async function saveSettings(cmv, opex, lucro, oscbrUsuario = null, oscbrSenha = null) {
   const db = await getDb();
   const result = await db.runAsync(
-    'UPDATE Configuracoes SET percentual_cmv = ?, percentual_opex = ?, percentual_lucro = ? WHERE id = 1;',
-    [cmv, opex, lucro]
+    'UPDATE Configuracoes SET percentual_cmv = ?, percentual_opex = ?, percentual_lucro = ?, oscbr_usuario = ?, oscbr_senha = ? WHERE id = 1;',
+    [cmv, opex, lucro, oscbrUsuario, oscbrSenha]
   );
-  // Sincronizar com Supabase (offline-first)
+  // Sincronizar com Supabase (offline-first) — apenas os percentuais de split.
+  // As credenciais OSCBR ficam somente no dispositivo (não são enviadas à nuvem).
   await syncOrEnqueue('Configuracoes', 'upsert', {
     id: 1,
     percentual_cmv: cmv,
@@ -522,6 +540,64 @@ export async function fetchDashboardDetails() {
     itensVendidosHoje,
     estoqueBaixoCount,
     ultimasVendas: ultimasVendasFormatadas
+  };
+}
+
+// Resumo (read-only) do caixa de um dia específico. Zeros e lista vazia se não houver vendas.
+export async function fetchDailyClosing(date) {
+  const db = await getDb();
+  const base = date instanceof Date ? date : new Date(date);
+  const inicio = new Date(base.getFullYear(), base.getMonth(), base.getDate(), 0, 0, 0, 0);
+  const fim = new Date(base.getFullYear(), base.getMonth(), base.getDate() + 1, 0, 0, 0, 0);
+  const inicioISO = inicio.toISOString();
+  const fimISO = fim.toISOString();
+
+  const totais = await db.getAllAsync(
+    `SELECT
+       COUNT(*) AS num_vendas,
+       COALESCE(SUM(valor_total), 0) AS faturamento,
+       COALESCE(SUM(valor_cmv), 0)   AS cmv,
+       COALESCE(SUM(valor_opex), 0)  AS opex,
+       COALESCE(SUM(valor_lucro), 0) AS lucro
+     FROM Venda
+     WHERE data_venda >= ? AND data_venda < ?;`,
+    [inicioISO, fimISO]
+  );
+
+  const itens = await db.getAllAsync(
+    `SELECT COALESCE(SUM(iv.quantidade), 0) AS total_itens
+       FROM ItensVenda iv JOIN Venda v ON iv.venda_id = v.id
+      WHERE v.data_venda >= ? AND v.data_venda < ?;`,
+    [inicioISO, fimISO]
+  );
+
+  const topProdutos = await db.getAllAsync(
+    `SELECT p.nome AS nome,
+            SUM(iv.quantidade) AS qtd,
+            SUM(iv.quantidade * iv.preco_unitario) AS total
+       FROM ItensVenda iv
+       JOIN Venda v   ON iv.venda_id = v.id
+       JOIN Produto p ON iv.produto_id = p.id
+      WHERE v.data_venda >= ? AND v.data_venda < ?
+      GROUP BY iv.produto_id
+      ORDER BY qtd DESC
+      LIMIT 5;`,
+    [inicioISO, fimISO]
+  );
+
+  const t = totais[0] || {};
+  const numVendas = t.num_vendas || 0;
+  const faturamento = t.faturamento || 0;
+
+  return {
+    numVendas,
+    faturamento,
+    cmv: t.cmv || 0,
+    opex: t.opex || 0,
+    lucro: t.lucro || 0,
+    itensVendidos: itens[0]?.total_itens || 0,
+    ticketMedio: numVendas > 0 ? faturamento / numVendas : 0,
+    topProdutos,
   };
 }
 

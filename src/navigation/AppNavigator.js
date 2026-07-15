@@ -10,6 +10,7 @@ import DashboardScreen from '../screens/DashboardScreen';
 import ProductsScreen from '../screens/ProductsScreen';
 import NewSaleScreen from '../screens/NewSaleScreen';
 import ReportsScreen from '../screens/ReportsScreen';
+import DailyClosingScreen from '../screens/DailyClosingScreen';
 
 const Stack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
@@ -31,6 +32,8 @@ function AppTabs() {
             iconName = focused ? 'document-text' : 'document-text-outline';
           } else if (route.name === 'Relatórios') {
             iconName = focused ? 'bar-chart' : 'bar-chart-outline';
+          } else if (route.name === 'Caixa') {
+            iconName = focused ? 'cash' : 'cash-outline';
           }
 
           return <Ionicons name={iconName} size={size} color={color} />;
@@ -54,6 +57,7 @@ function AppTabs() {
       <Tab.Screen name="Produtos" component={ProductsScreen} />
       <Tab.Screen name="Venda" component={NewSaleScreen} />
       <Tab.Screen name="Relatórios" component={ReportsScreen} />
+      <Tab.Screen name="Caixa" component={DailyClosingScreen} />
     </Tab.Navigator>
   );
 }
