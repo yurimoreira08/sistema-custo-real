@@ -99,6 +99,8 @@ export async function initializeDatabase() {
     await initSyncQueue();
 
     // --- SEEDING INICIAL DE DADOS ---
+    // Marca se algum seed ocorreu, para subir o estado inicial à nuvem ao final.
+    let seeded = false;
 
     // 1. Usuário Padrão
     const userCheck = await db.getAllAsync('SELECT * FROM Usuario LIMIT 1;');
@@ -118,6 +120,7 @@ export async function initializeDatabase() {
         [60.0, 20.0, 20.0]
       );
       console.log('Banco de dados: Configuração padrão (60/20/20) inserida.');
+      seeded = true;
     }
 
     // 3. Produtos de Exemplo
@@ -183,9 +186,74 @@ export async function initializeDatabase() {
       await db.runAsync('UPDATE Produto SET estoque = estoque - 1 WHERE id = 3;');
       await db.runAsync('UPDATE Produto SET estoque = estoque - 2 WHERE id = 4;');
       console.log('Banco de dados: Vendas de exemplo e atualização de estoque concluídas.');
+      seeded = true;
+    }
+
+    // Se houve seeding inicial, sobe todo o estado local para o Supabase.
+    // syncOrEnqueue é offline-safe: envia se online, senão enfileira para retry.
+    if (seeded) {
+      await enqueueFullSync();
+      console.log('Banco de dados: estado inicial enfileirado para sincronização.');
     }
   } catch (error) {
     console.error('Erro ao inicializar o banco de dados:', error);
+  }
+}
+
+// Enfileira TODO o estado local atual (config, produtos, vendas e itens) para o
+// Supabase. Usado no seeding inicial para que o catálogo e as vendas de exemplo
+// também subam à nuvem. Ordem (config → produtos → vendas → itens) respeita as
+// FKs do Postgres, tanto no envio imediato quanto no processamento FIFO da fila.
+export async function enqueueFullSync() {
+  const db = await getDb();
+
+  const config = await db.getAllAsync('SELECT * FROM Configuracoes WHERE id = 1 LIMIT 1;');
+  if (config[0]) {
+    await syncOrEnqueue('Configuracoes', 'upsert', {
+      id: config[0].id,
+      percentual_cmv: config[0].percentual_cmv,
+      percentual_opex: config[0].percentual_opex,
+      percentual_lucro: config[0].percentual_lucro,
+    });
+  }
+
+  const produtos = await db.getAllAsync('SELECT * FROM Produto;');
+  for (const p of produtos) {
+    await syncOrEnqueue('Produto', 'upsert', {
+      id: p.id,
+      nome: p.nome,
+      marca: p.marca ?? null,
+      codigo_barras: p.codigo_barras ?? null,
+      categoria: p.categoria ?? 'Outros',
+      preco_custo: p.preco_custo,
+      preco_venda: p.preco_venda,
+      estoque: p.estoque,
+      estoque_minimo: p.estoque_minimo,
+    });
+  }
+
+  const vendas = await db.getAllAsync('SELECT * FROM Venda;');
+  for (const v of vendas) {
+    await syncOrEnqueue('Venda', 'upsert', {
+      id: v.id,
+      data_venda: v.data_venda,
+      valor_total: v.valor_total,
+      valor_cmv: v.valor_cmv,
+      valor_opex: v.valor_opex,
+      valor_lucro: v.valor_lucro,
+    });
+  }
+
+  const itens = await db.getAllAsync('SELECT * FROM ItensVenda;');
+  for (const it of itens) {
+    await syncOrEnqueue('ItensVenda', 'upsert', {
+      id: it.id,
+      venda_id: it.venda_id,
+      produto_id: it.produto_id,
+      quantidade: it.quantidade,
+      preco_unitario: it.preco_unitario,
+      preco_custo_unitario: it.preco_custo_unitario,
+    });
   }
 }
 
@@ -314,8 +382,15 @@ export async function saveSettings(cmv, opex, lucro, oscbrUsuario = null, oscbrS
 export async function registerSale(cartItems, splitPercentages) {
   const db = await getDb();
 
+  // Payloads coletados DENTRO da transação e sincronizados APÓS o commit,
+  // para não segurar a transação SQLite aberta durante I/O de rede.
+  let vendaId;
+  let vendaPayload;
+  const itemPayloads = [];
+  const produtoPayloads = [];
+
   // Executa toda a transação de forma atômica
-  return await db.withTransactionAsync(async () => {
+  await db.withTransactionAsync(async () => {
     // 1. Calcular valores
     let valorTotal = 0;
     for (const item of cartItems) {
@@ -333,71 +408,82 @@ export async function registerSale(cartItems, splitPercentages) {
       'INSERT INTO Venda (data_venda, valor_total, valor_cmv, valor_opex, valor_lucro) VALUES (?, ?, ?, ?, ?);',
       [now, valorTotal, valorCmv, valorOpex, valorLucro]
     );
-    const vendaId = saleResult.lastInsertRowId;
-
-    // 3. Processar cada item da venda
-    for (const item of cartItems) {
-      // Buscar estoque atual do produto para validação
-      const productRow = await db.getAllAsync('SELECT estoque, nome FROM Produto WHERE id = ?;', [item.id]);
-      if (productRow.length === 0) {
-        throw new Error(`Produto "${item.nome}" não encontrado.`);
-      }
-
-      const currentStock = productRow[0].estoque;
-      const newStock = currentStock - item.quantidade;
-
-      // RN02: Bloqueio de Estoque
-      if (newStock < 0) {
-        throw new Error(`Estoque insuficiente para "${item.nome}". Disponível: ${currentStock}, Solicitado: ${item.quantidade}`);
-      }
-
-      // Atualizar o estoque do produto
-      await db.runAsync('UPDATE Produto SET estoque = ? WHERE id = ?;', [newStock, item.id]);
-
-      // Inserir item da venda
-      await db.runAsync(
-        'INSERT INTO ItensVenda (venda_id, produto_id, quantidade, preco_unitario, preco_custo_unitario) VALUES (?, ?, ?, ?, ?);',
-        [vendaId, item.id, item.quantidade, item.preco_venda, item.preco_custo]
-      );
-    }
-
-    // Sincronizar a Venda e seus Itens com o Supabase (offline-first)
-    // Nota: a sincronização ocorre APÓS a transação SQLite ter sido commitada
-    await syncOrEnqueue('Venda', 'upsert', {
+    vendaId = saleResult.lastInsertRowId;
+    vendaPayload = {
       id: vendaId,
       data_venda: now,
       valor_total: valorTotal,
       valor_cmv: valorCmv,
       valor_opex: valorOpex,
       valor_lucro: valorLucro,
-    });
+    };
 
+    // 3. Processar cada item da venda
     for (const item of cartItems) {
-      await syncOrEnqueue('ItensVenda', 'upsert', {
+      // Buscar o produto atual (estoque para validação + demais campos para o sync autoritativo)
+      const productRow = await db.getAllAsync(
+        'SELECT nome, marca, codigo_barras, categoria, preco_custo, preco_venda, estoque, estoque_minimo FROM Produto WHERE id = ?;',
+        [item.id]
+      );
+      if (productRow.length === 0) {
+        throw new Error(`Produto "${item.nome}" não encontrado.`);
+      }
+      const prod = productRow[0];
+
+      const newStock = prod.estoque - item.quantidade;
+
+      // RN02: Bloqueio de Estoque
+      if (newStock < 0) {
+        throw new Error(`Estoque insuficiente para "${item.nome}". Disponível: ${prod.estoque}, Solicitado: ${item.quantidade}`);
+      }
+
+      // Atualizar o estoque do produto
+      await db.runAsync('UPDATE Produto SET estoque = ? WHERE id = ?;', [newStock, item.id]);
+
+      // Inserir item da venda (capturando o id para sync idempotente)
+      const itemResult = await db.runAsync(
+        'INSERT INTO ItensVenda (venda_id, produto_id, quantidade, preco_unitario, preco_custo_unitario) VALUES (?, ?, ?, ?, ?);',
+        [vendaId, item.id, item.quantidade, item.preco_venda, item.preco_custo]
+      );
+
+      itemPayloads.push({
+        id: itemResult.lastInsertRowId,
         venda_id: vendaId,
         produto_id: item.id,
         quantidade: item.quantidade,
         preco_unitario: item.preco_venda,
         preco_custo_unitario: item.preco_custo,
       });
-      // Sincronizar estoque atualizado do produto
-      const estoqueAtualizado = item.quantidade;
-      await syncOrEnqueue('Produto', 'upsert', {
+
+      // Produto com estoque autoritativo (valores lidos do próprio banco)
+      produtoPayloads.push({
         id: item.id,
-        nome: item.nome,
-        marca: item.marca || null,
-        codigo_barras: item.codigo_barras || null,
-        categoria: item.categoria || 'Outros',
-        preco_custo: item.preco_custo,
-        preco_venda: item.preco_venda,
-        estoque_minimo: item.estoque_minimo ?? 0,
-        // O estoque real está no SQLite; buscamos o valor atualizado
-        estoque: (item.estoque ?? 0) - estoqueAtualizado,
+        nome: prod.nome,
+        marca: prod.marca ?? null,
+        codigo_barras: prod.codigo_barras ?? null,
+        categoria: prod.categoria ?? 'Outros',
+        preco_custo: prod.preco_custo,
+        preco_venda: prod.preco_venda,
+        estoque: newStock,
+        estoque_minimo: prod.estoque_minimo ?? 0,
       });
     }
-
-    return vendaId;
   });
+
+  // 4. Sincronizar com o Supabase APÓS o commit (fora da transação, offline-first).
+  // Ordem obrigatória por causa das FKs do Postgres: ItensVenda referencia
+  // Venda e Produto, então ambos os pais precisam subir ANTES do item — senão
+  // o upsert do item falha com "violates foreign key constraint". Como a fila é
+  // FIFO, essa ordem de enfileiramento também vale para o retry offline.
+  await syncOrEnqueue('Venda', 'upsert', vendaPayload);
+  for (const payload of produtoPayloads) {
+    await syncOrEnqueue('Produto', 'upsert', payload);
+  }
+  for (const payload of itemPayloads) {
+    await syncOrEnqueue('ItensVenda', 'upsert', payload);
+  }
+
+  return vendaId;
 }
 
 // Obter histórico de vendas

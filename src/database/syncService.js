@@ -113,6 +113,11 @@ export async function syncToSupabase(tableName, operation, payload) {
 
 const MAX_RETRIES = 5;
 
+// Evita que múltiplos gatilhos (poll, reconexão, foreground, escrita) processem
+// a mesma fila em paralelo. upsert/delete já são idempotentes; a flag apenas
+// impede trabalho duplicado e logs confusos.
+let isProcessingQueue = false;
+
 /**
  * Processa todas as operações pendentes na sync_queue.
  * Operações bem-sucedidas são removidas; operações com muitas falhas
@@ -124,45 +129,52 @@ export async function processSyncQueue() {
     return;
   }
 
-  const db = await getDb();
+  if (isProcessingQueue) return; // já há um processamento em andamento
+  isProcessingQueue = true;
 
-  // Buscar operações pendentes ordenadas por criação (FIFO)
-  const pending = await db.getAllAsync(
-    `SELECT * FROM sync_queue ORDER BY id ASC LIMIT 50;`
-  );
+  try {
+    const db = await getDb();
 
-  if (pending.length === 0) return;
+    // Buscar operações pendentes ordenadas por criação (FIFO)
+    const pending = await db.getAllAsync(
+      `SELECT * FROM sync_queue ORDER BY id ASC LIMIT 50;`
+    );
 
-  console.log(`[SyncService] Processando ${pending.length} operação(ões) pendente(s)...`);
+    if (pending.length === 0) return;
 
-  for (const item of pending) {
-    let payload;
-    try {
-      payload = JSON.parse(item.payload);
-    } catch {
-      // Payload corrompido — remover da fila
-      await db.runAsync('DELETE FROM sync_queue WHERE id = ?;', [item.id]);
-      continue;
-    }
+    console.log(`[SyncService] Processando ${pending.length} operação(ões) pendente(s)...`);
 
-    const success = await syncToSupabase(item.table_name, item.operation, payload);
-
-    if (success) {
-      await db.runAsync('DELETE FROM sync_queue WHERE id = ?;', [item.id]);
-      console.log(`[SyncService] ✓ ${item.operation} em ${item.table_name} (id: ${item.id}) sincronizado.`);
-    } else {
-      const newRetries = item.retries + 1;
-      if (newRetries >= MAX_RETRIES) {
-        // Desistir após MAX_RETRIES tentativas
+    for (const item of pending) {
+      let payload;
+      try {
+        payload = JSON.parse(item.payload);
+      } catch {
+        // Payload corrompido — remover da fila
         await db.runAsync('DELETE FROM sync_queue WHERE id = ?;', [item.id]);
-        console.warn(`[SyncService] ✗ Operação id=${item.id} descartada após ${MAX_RETRIES} tentativas.`);
+        continue;
+      }
+
+      const success = await syncToSupabase(item.table_name, item.operation, payload);
+
+      if (success) {
+        await db.runAsync('DELETE FROM sync_queue WHERE id = ?;', [item.id]);
+        console.log(`[SyncService] ✓ ${item.operation} em ${item.table_name} (id: ${item.id}) sincronizado.`);
       } else {
-        await db.runAsync(
-          'UPDATE sync_queue SET retries = ? WHERE id = ?;',
-          [newRetries, item.id]
-        );
+        const newRetries = item.retries + 1;
+        if (newRetries >= MAX_RETRIES) {
+          // Desistir após MAX_RETRIES tentativas
+          await db.runAsync('DELETE FROM sync_queue WHERE id = ?;', [item.id]);
+          console.warn(`[SyncService] ✗ Operação id=${item.id} descartada após ${MAX_RETRIES} tentativas.`);
+        } else {
+          await db.runAsync(
+            'UPDATE sync_queue SET retries = ? WHERE id = ?;',
+            [newRetries, item.id]
+          );
+        }
       }
     }
+  } finally {
+    isProcessingQueue = false;
   }
 }
 

@@ -12,6 +12,7 @@ import {
 import { checkNetworkAndSync, getSyncQueueCount } from '../database/syncService';
 import { isSupabaseConfigured } from '../database/supabaseClient';
 import * as Network from 'expo-network';
+import { AppState } from 'react-native';
 
 const AppContext = createContext();
 
@@ -58,12 +59,53 @@ export function AppProvider({ children }) {
     setupDb();
   }, []);
 
-  // Atualiza o status de sync depois que o banco estiver pronto e a cada 15s
+  // Auto-sincronização: drena a fila ao reconectar, ao voltar ao foreground e
+  // periodicamente (poll de segurança), além de atualizar o status a cada 15s.
   useEffect(() => {
     if (!dbReady) return;
+
+    // Drena a fila se houver pendências e atualiza o status.
+    // checkNetworkAndSync reavalia a rede internamente (só sobe se online).
+    const drainIfPending = async () => {
+      try {
+        const count = await getSyncQueueCount();
+        if (count > 0) await checkNetworkAndSync();
+      } catch (e) {}
+      await refreshSyncStatus();
+    };
+
+    // Status inicial
     refreshSyncStatus();
-    const id = setInterval(refreshSyncStatus, 15000);
-    return () => clearInterval(id);
+
+    // Poll de segurança: garante o dreno mesmo se algum evento de rede não disparar
+    const intervalId = setInterval(drainIfPending, 15000);
+
+    // Reconexão de rede → drena. Blindado: se a API não existir em alguma
+    // plataforma, o poll acima ainda garante o dreno.
+    let netSub;
+    try {
+      netSub = Network.addNetworkStateListener((state) => {
+        if (state.isConnected && state.isInternetReachable) {
+          drainIfPending();
+        } else {
+          refreshSyncStatus();
+        }
+      });
+    } catch (e) {}
+
+    // Volta ao foreground → drena
+    let appStateSub;
+    try {
+      appStateSub = AppState.addEventListener('change', (next) => {
+        if (next === 'active') drainIfPending();
+      });
+    } catch (e) {}
+
+    return () => {
+      clearInterval(intervalId);
+      netSub?.remove?.();
+      appStateSub?.remove?.();
+    };
   }, [dbReady]);
 
   // Carregar dados gerais quando o banco estiver pronto ou quando o usuário logar
