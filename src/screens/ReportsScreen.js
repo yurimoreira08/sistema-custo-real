@@ -10,17 +10,18 @@ import {
   Modal,
   KeyboardAvoidingView,
   Platform,
-  Dimensions
+  Dimensions,
+  Image
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useApp } from '../context/AppContext';
-import { fetchReportData } from '../database/db';
+import { fetchReportData, fetchUsers, registerUser, deleteUser } from '../database/db';
 import { Ionicons } from '@expo/vector-icons';
 import SyncBadge from '../components/SyncBadge';
 
 export default function ReportsScreen() {
-  const { logout, settings, updateSettings, refreshData } = useApp();
+  const { user, logout, settings, updateSettings, refreshData } = useApp();
   const [selectedPeriod, setSelectedPeriod] = useState(7); // 7, 30, 90, 180, 365
   const [reportData, setReportData] = useState({
     receitaTotal: 0,
@@ -37,8 +38,15 @@ export default function ReportsScreen() {
   const [cmvPercent, setCmvPercent] = useState('');
   const [opexPercent, setOpexPercent] = useState('');
   const [lucroPercent, setLucroPercent] = useState('');
-  const [oscbrUsuario, setOscbrUsuario] = useState('');
-  const [oscbrSenha, setOscbrSenha] = useState('');
+
+  // Estados para Gerenciamento de Equipe
+  const [usersList, setUsersList] = useState([]);
+  const [teamModalVisible, setTeamModalVisible] = useState(false);
+  const [newNome, setNewNome] = useState('');
+  const [newEmail, setNewEmail] = useState('');
+  const [newSenha, setNewSenha] = useState('');
+  const [newCargo, setNewCargo] = useState('balconista'); // gerente ou balconista
+  const [showNewPassword, setShowNewPassword] = useState(false);
 
   // Carregar dados toda vez que o período mudar ou quando o contexto atualizar
   useEffect(() => {
@@ -51,15 +59,29 @@ export default function ReportsScreen() {
       setCmvPercent(settings.percentual_cmv.toString());
       setOpexPercent(settings.percentual_opex.toString());
       setLucroPercent(settings.percentual_lucro.toString());
-      setOscbrUsuario(settings.oscbr_usuario || '');
-      setOscbrSenha(settings.oscbr_senha || '');
     }
   }, [settings, settingsModalVisible]);
+
+  // Carregar lista de equipe
+  const loadTeamList = async () => {
+    if (user?.gerente_id) {
+      try {
+        const list = await fetchUsers(user.gerente_id);
+        setUsersList(list);
+      } catch (error) {
+        console.error('Erro ao buscar lista de equipe:', error);
+      }
+    }
+  };
+
+  useEffect(() => {
+    loadTeamList();
+  }, [user]);
 
   const loadReportDetails = async () => {
     setLoading(true);
     try {
-      const data = await fetchReportData(selectedPeriod);
+      const data = await fetchReportData(selectedPeriod, user.gerente_id);
       setReportData(data);
     } catch (error) {
       console.error('Erro ao carregar dados do relatório:', error);
@@ -119,7 +141,7 @@ export default function ReportsScreen() {
     }
 
     try {
-      await updateSettings(cmv, opex, lucro, oscbrUsuario.trim(), oscbrSenha.trim());
+      await updateSettings(cmv, opex, lucro);
       Alert.alert('Sucesso', 'Configurações atualizadas com sucesso!');
       setSettingsModalVisible(false);
       await refreshData();
@@ -127,6 +149,49 @@ export default function ReportsScreen() {
     } catch (error) {
       Alert.alert('Erro', 'Não foi possível salvar as configurações.');
     }
+  };
+
+  const handleAddTeamMember = async () => {
+    if (!newNome.trim() || !newEmail.trim() || !newSenha.trim()) {
+      Alert.alert('Erro', 'Por favor, preencha todos os campos obrigatórios.');
+      return;
+    }
+
+    try {
+      await registerUser(newNome, newEmail, newSenha, newCargo, user.gerente_id);
+      Alert.alert('Sucesso', 'Funcionário cadastrado com sucesso!');
+      setTeamModalVisible(false);
+      setNewNome('');
+      setNewEmail('');
+      setNewSenha('');
+      setNewCargo('balconista');
+      await loadTeamList();
+    } catch (error) {
+      Alert.alert('Erro no Cadastro', error.message || 'Ocorreu um erro.');
+    }
+  };
+
+  const handleDeleteTeamMember = (id, nome) => {
+    Alert.alert(
+      'Remover Acesso',
+      `Deseja realmente excluir o funcionário "${nome}"?`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        { 
+          text: 'Excluir', 
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteUser(id);
+              Alert.alert('Sucesso', 'Acesso removido com sucesso.');
+              await loadTeamList();
+            } catch (error) {
+              Alert.alert('Erro', error.message || 'Ocorreu um erro ao excluir.');
+            }
+          }
+        }
+      ]
+    );
   };
 
   // Custom Chart Rendering Helpers
@@ -140,8 +205,8 @@ export default function ReportsScreen() {
       {/* Header Bar */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          <Ionicons name="cart" size={24} color="#FFF" style={{ marginRight: 8 }} />
-          <Text style={styles.headerTitle}>Mercado Manager</Text>
+          <Image source={require('../../assets/logo_lucrocerto.png')} style={{ width: 28, height: 28, borderRadius: 6, marginRight: 8 }} />
+          <Text style={styles.headerTitle}>LucroCerto</Text>
         </View>
         <View style={styles.headerRight}>
           <SyncBadge />
@@ -313,6 +378,59 @@ export default function ReportsScreen() {
               </View>
             </View>
           )}
+
+          {/* Seção Gerenciamento de Equipe */}
+          <View style={styles.teamSectionContainer}>
+            <View style={styles.teamSectionHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Text style={{ fontSize: 18, marginRight: 6 }}>👥</Text>
+                <Text style={styles.teamSectionTitle}>Gerenciamento de Equipe</Text>
+              </View>
+              <TouchableOpacity 
+                style={styles.addMemberHeaderBtn} 
+                onPress={() => setTeamModalVisible(true)}
+              >
+                <Text style={styles.addMemberHeaderBtnText}>+ Novo</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.teamSectionSubtitle}>
+              Cadastre gerentes ou balconistas para acessarem este comércio.
+            </Text>
+
+            {usersList.length === 0 ? (
+              <View style={styles.emptyTeamCard}>
+                <Text style={styles.emptyTeamText}>Nenhum funcionário cadastrado.</Text>
+              </View>
+            ) : (
+              <View style={styles.teamListContainer}>
+                {usersList.map((member) => (
+                  <View key={member.id.toString()} style={styles.memberRow}>
+                    <View style={styles.memberInfo}>
+                      <View style={styles.memberAvatar}>
+                        <Text style={styles.memberAvatarText}>
+                          {member.nome.charAt(0).toUpperCase()}
+                        </Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.memberName}>{member.nome}</Text>
+                        <Text style={styles.memberEmail}>
+                          {member.email} — <Text style={styles.memberRoleTag}>{member.cargo === 'gerente' ? 'Gerente' : 'Balconista'}</Text>
+                        </Text>
+                      </View>
+                    </View>
+                    {member.email !== 'admin' && member.id !== user.id && (
+                      <TouchableOpacity 
+                        style={styles.deleteMemberBtn} 
+                        onPress={() => handleDeleteTeamMember(member.id, member.nome)}
+                      >
+                        <Ionicons name="trash-outline" size={18} color="#E53E3E" />
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                ))}
+              </View>
+            )}
+          </View>
         </View>
       </ScrollView>
 
@@ -378,42 +496,7 @@ export default function ReportsScreen() {
                 </View>
               </View>
 
-              {/* Credenciais da API OSCBR (RSC Sistemas) */}
-              <View style={{ marginTop: 16, paddingTop: 16, borderTopWidth: 1, borderTopColor: '#E2E8F0' }}>
-                <Text style={{ fontSize: 13, fontWeight: 'bold', color: '#1E63EC', marginBottom: 12 }}>
-                  🔑 Integração OSCBR (RSC Sistemas)
-                </Text>
-                
-                <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>Usuário OSCBR</Text>
-                  <View style={styles.inputWrapper}>
-                    <TextInput
-                      style={styles.formInput}
-                      value={oscbrUsuario}
-                      onChangeText={setOscbrUsuario}
-                      placeholder="Seu usuário cadastrado"
-                      autoCapitalize="none"
-                    />
-                  </View>
-                </View>
-
-                <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>Senha OSCBR</Text>
-                  <View style={styles.inputWrapper}>
-                    <TextInput
-                      style={styles.formInput}
-                      value={oscbrSenha}
-                      onChangeText={setOscbrSenha}
-                      placeholder="Sua senha cadastrada"
-                      secureTextEntry={true}
-                      autoCapitalize="none"
-                    />
-                  </View>
-                </View>
-                <Text style={{ fontSize: 11, color: '#718096', marginTop: -4, marginBottom: 12 }}>
-                  Cadastre-se em gtin.rscsistemas.com.br para obter credenciais da API.
-                </Text>
-              </View>
+              {/* Removido OSCBR */}
 
               <View style={styles.statusRow}>
                 <Text style={styles.statusLabel}>Total das Carteiras:</Text>
@@ -445,6 +528,125 @@ export default function ReportsScreen() {
                   disabled={!isSumValid}
                 >
                   <Text style={styles.saveModalBtnText}>💾 Salvar</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Modal Cadastrar Funcionário */}
+      <Modal
+        animationType="fade"
+        transparent={true}
+        visible={teamModalVisible}
+        onRequestClose={() => setTeamModalVisible(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.modalOverlay}
+        >
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>👤 Cadastrar Funcionário</Text>
+              <TouchableOpacity onPress={() => setTeamModalVisible(false)} style={styles.closeModalBtn}>
+                <Ionicons name="close" size={20} color="#FFF" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView contentContainerStyle={styles.modalForm}>
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabel}>Nome Completo *</Text>
+                <View style={styles.inputWrapper}>
+                  <TextInput
+                    style={styles.formInput}
+                    value={newNome}
+                    onChangeText={setNewNome}
+                    placeholder="Ex: Pedro de Souza"
+                    autoCorrect={false}
+                  />
+                </View>
+              </View>
+
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabel}>E-mail / Usuário de Acesso *</Text>
+                <View style={styles.inputWrapper}>
+                  <TextInput
+                    style={styles.formInput}
+                    value={newEmail}
+                    onChangeText={setNewEmail}
+                    placeholder="Ex: pedro@comercio.com"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                </View>
+              </View>
+
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabel}>Senha de Acesso *</Text>
+                <View style={styles.inputWrapper}>
+                  <TextInput
+                    style={styles.formInput}
+                    value={newSenha}
+                    onChangeText={setNewSenha}
+                    placeholder="Digite a senha temporária"
+                    secureTextEntry={!showNewPassword}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                  <TouchableOpacity 
+                    style={{ padding: 6 }} 
+                    onPress={() => setShowNewPassword(!showNewPassword)}
+                  >
+                    <Ionicons 
+                      name={showNewPassword ? "eye-off-outline" : "eye-outline"} 
+                      size={18} 
+                      color="#A0AEC0" 
+                    />
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabel}>Cargo / Nível de Acesso *</Text>
+                <View style={styles.roleContainer}>
+                  <TouchableOpacity 
+                    style={[styles.roleOption, newCargo === 'balconista' && styles.roleOptionActive]}
+                    onPress={() => setNewCargo('balconista')}
+                  >
+                    <Text style={[styles.roleOptionText, newCargo === 'balconista' && styles.roleOptionTextActive]}>
+                      Balconista
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity 
+                    style={[styles.roleOption, newCargo === 'gerente' && styles.roleOptionActive]}
+                    onPress={() => setNewCargo('gerente')}
+                  >
+                    <Text style={[styles.roleOptionText, newCargo === 'gerente' && styles.roleOptionTextActive]}>
+                      Gerente
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+                <Text style={styles.roleTip}>
+                  {newCargo === 'balconista' 
+                    ? '💡 Balconistas podem apenas vender e visualizar estoque. Não acessam relatórios financeiros.' 
+                    : '💡 Gerentes têm acesso completo às configurações, relatórios de CMV/lucros e equipe.'}
+                </Text>
+              </View>
+
+              <View style={styles.modalActions}>
+                <TouchableOpacity 
+                  style={styles.cancelModalBtn} 
+                  onPress={() => setTeamModalVisible(false)}
+                >
+                  <Text style={styles.cancelModalBtnText}>Cancelar</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity 
+                  style={styles.saveModalBtn} 
+                  onPress={handleAddTeamMember}
+                >
+                  <Text style={styles.saveModalBtnText}>💾 Cadastrar</Text>
                 </TouchableOpacity>
               </View>
             </ScrollView>
@@ -860,5 +1062,134 @@ const styles = StyleSheet.create({
     color: '#FFF',
     fontSize: 14,
     fontWeight: 'bold',
+  },
+  // Estilos de Equipe
+  teamSectionContainer: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 16,
+    marginTop: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  teamSectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  teamSectionTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#2D3748',
+  },
+  teamSectionSubtitle: {
+    fontSize: 12,
+    color: '#718096',
+    marginTop: 4,
+    marginBottom: 16,
+  },
+  addMemberHeaderBtn: {
+    backgroundColor: '#1E63EC',
+    borderRadius: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  addMemberHeaderBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  emptyTeamCard: {
+    alignItems: 'center',
+    paddingVertical: 20,
+  },
+  emptyTeamText: {
+    color: '#718096',
+    fontSize: 13,
+  },
+  teamListContainer: {
+    gap: 12,
+  },
+  memberRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#EDF2F7',
+  },
+  memberInfo: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: 10,
+  },
+  memberAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#EBF8FF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 10,
+  },
+  memberAvatarText: {
+    color: '#2B6CB0',
+    fontWeight: 'bold',
+    fontSize: 14,
+  },
+  memberName: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#2D3748',
+  },
+  memberEmail: {
+    fontSize: 11,
+    color: '#718096',
+    marginTop: 2,
+  },
+  memberRoleTag: {
+    fontWeight: 'bold',
+    color: '#2B6CB0',
+  },
+  deleteMemberBtn: {
+    padding: 6,
+  },
+  roleContainer: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 6,
+  },
+  roleOption: {
+    flex: 1,
+    backgroundColor: '#EDF2F7',
+    borderRadius: 6,
+    paddingVertical: 10,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  roleOptionActive: {
+    backgroundColor: '#EBF8FF',
+    borderColor: '#3182CE',
+  },
+  roleOptionText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#718096',
+  },
+  roleOptionTextActive: {
+    color: '#2B6CB0',
+  },
+  roleTip: {
+    fontSize: 11,
+    color: '#718096',
+    marginTop: 8,
+    lineHeight: 15,
   },
 });

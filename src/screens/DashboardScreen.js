@@ -7,7 +7,8 @@ import {
   TouchableOpacity, 
   RefreshControl,
   FlatList,
-  Dimensions
+  Dimensions,
+  Image
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -87,8 +88,8 @@ export default function DashboardScreen() {
       {/* Header Bar */}
       <View style={styles.header}>
         <View style={[styles.headerLeft, { flex: 1 }]}>
-          <Ionicons name="cart" size={24} color="#FFF" style={{ marginRight: 8 }} />
-          <Text style={[styles.headerTitle, { flexShrink: 1 }]} numberOfLines={1}>Mercado Manager</Text>
+          <Image source={require('../../assets/logo_lucrocerto.png')} style={{ width: 28, height: 28, borderRadius: 6, marginRight: 8 }} />
+          <Text style={[styles.headerTitle, { flexShrink: 1 }]} numberOfLines={1}>LucroCerto</Text>
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
           <SyncBadge />
@@ -164,9 +165,11 @@ export default function DashboardScreen() {
             <Text style={{ fontSize: 16, marginRight: 6 }}>📋</Text>
             <Text style={styles.sectionTitle}>Últimas Vendas</Text>
           </View>
-          <TouchableOpacity onPress={() => navigation.navigate('Relatórios')}>
-            <Text style={styles.historyLink}>Ver histórico →</Text>
-          </TouchableOpacity>
+          {user?.cargo === 'gerente' && (
+            <TouchableOpacity onPress={() => navigation.navigate('Relatórios')}>
+              <Text style={styles.historyLink}>Ver histórico →</Text>
+            </TouchableOpacity>
+          )}
         </View>
 
         {/* Card Azul Container de Vendas de Hoje */}
@@ -176,9 +179,11 @@ export default function DashboardScreen() {
               <Text style={{ fontSize: 16, color: '#FFF', marginRight: 6 }}>📋</Text>
               <Text style={styles.salesHeaderTitle}>Vendas de Hoje</Text>
             </View>
-            <TouchableOpacity style={styles.verTudoBtn} onPress={() => navigation.navigate('Relatórios')}>
-              <Text style={styles.verTudoText}>Ver tudo</Text>
-            </TouchableOpacity>
+            {user?.cargo === 'gerente' && (
+              <TouchableOpacity style={styles.verTudoBtn} onPress={() => navigation.navigate('Relatórios')}>
+                <Text style={styles.verTudoText}>Ver tudo</Text>
+              </TouchableOpacity>
+            )}
           </View>
 
           {stats.ultimasVendas.length === 0 ? (

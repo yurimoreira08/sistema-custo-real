@@ -12,7 +12,8 @@ import {
   KeyboardAvoidingView,
   Platform,
   Dimensions,
-  ActivityIndicator
+  ActivityIndicator,
+  Image
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -27,7 +28,7 @@ import SyncBadge from '../components/SyncBadge';
 const CATEGORIAS = ['Laticínios', 'Mercearia', 'Bebidas', 'Higiene', 'Limpeza', 'Outros'];
 
 export default function ProductsScreen() {
-  const { products, logout, refreshData, settings } = useApp();
+  const { products, logout, refreshData, settings, user } = useApp();
   
   // Filtros
   const [search, setSearch] = useState('');
@@ -146,7 +147,7 @@ export default function ProductsScreen() {
         preco_venda: venda,
         estoque: qtyEstoque,
         estoque_minimo: qtyMin
-      });
+      }, user.gerente_id);
 
       Alert.alert('Sucesso', productId ? 'Produto atualizado com sucesso!' : 'Produto cadastrado com sucesso!');
       setModalVisible(false);
@@ -168,7 +169,7 @@ export default function ProductsScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
-              await deleteProduct(id);
+              await deleteProduct(id, user.gerente_id);
               await refreshData();
               Alert.alert('Sucesso', 'Produto excluído com sucesso.');
             } catch (error) {
@@ -227,7 +228,7 @@ export default function ProductsScreen() {
     return encoded;
   };
 
-  // Busca dados de produto na API do OSCBR (RSC Sistemas) ou na base do Open Food Facts (fallback)
+  // Busca dados de produto na base do Open Food Facts
   const fetchProductFromApi = async (barcode) => {
     if (!barcode || barcode.trim().length < 8) {
       Alert.alert('Código inválido', 'O código de barras para busca automática deve ter pelo menos 8 dígitos.');
@@ -236,167 +237,51 @@ export default function ProductsScreen() {
 
     setIsFetchingApi(true);
     let productFound = false;
-    let oscbrErrorMsg = null;
 
-    // Verificar se as credenciais do OSCBR estão configuradas
-    const hasOscbrCredentials = settings?.oscbr_usuario?.trim() && settings?.oscbr_senha?.trim();
-
-    if (hasOscbrCredentials) {
-      try {
-        console.log('Tentando buscar dados no OSCBR...');
-        const credentials = `${settings.oscbr_usuario.trim()}:${settings.oscbr_senha.trim()}`;
-        const base64Credentials = encodeBase64(credentials);
-
-        // 1. Obter Token do OSCBR (v3)
-        const tokenResponse = await fetch('https://gtin.rscsistemas.com.br/api/v3/oauth/token', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Basic ${base64Credentials}`,
-            'Accept': 'application/json'
-          }
-        });
-
-        if (tokenResponse.ok) {
-          const tokenData = await tokenResponse.json();
-          const token = tokenData.token;
-
-          if (token) {
-            // 2. Consulta de Produto (GTIN)
-            const productResponse = await fetch(`https://gtin.rscsistemas.com.br/api/v3/gtin/${barcode.trim()}`, {
-              method: 'GET',
-              headers: {
-                'Authorization': `Bearer ${token}`,
-                'Accept': 'application/json'
-              }
-            });
-
-            if (productResponse.ok) {
-              const prodData = await productResponse.json();
-              if (prodData && prodData.nome) {
-                const fetchedNome = prodData.nome.trim();
-                const fetchedMarca = prodData.marca ? prodData.marca.trim() : '';
-                
-                // Categorização inteligente
-                let fetchedCategoria = 'Outros';
-                const categoriesStr = ((prodData.categoria || '') + ' ' + fetchedNome).toLowerCase();
-                
-                const isDairy = categoriesStr.includes('laticínios') || categoriesStr.includes('dairy') || categoriesStr.includes('leite') || categoriesStr.includes('queijo') || categoriesStr.includes('yogurt') || categoriesStr.includes('iogurte') || categoriesStr.includes('manteiga');
-                const isBeverage = categoriesStr.includes('bebidas') || categoriesStr.includes('beverages') || categoriesStr.includes('suco') || categoriesStr.includes('refrigerante') || categoriesStr.includes('cerva') || categoriesStr.includes('cerveja') || categoriesStr.includes('vinho') || categoriesStr.includes('água') || categoriesStr.includes('agua') || categoriesStr.includes('natar') || categoriesStr.includes('nectar');
-                const isHygiene = categoriesStr.includes('higiene') || categoriesStr.includes('hygiene') || categoriesStr.includes('sabonete') || categoriesStr.includes('shampoo') || categoriesStr.includes('dental') || categoriesStr.includes('creme dental') || categoriesStr.includes('desodorante') || categoriesStr.includes('fio dental');
-                const isCleaning = categoriesStr.includes('limpeza') || categoriesStr.includes('cleaning') || categoriesStr.includes('detergente') || categoriesStr.includes('amaciante') || categoriesStr.includes('sabão em pó') || categoriesStr.includes('sabao em po') || categoriesStr.includes('desinfetante') || categoriesStr.includes('saponáceo') || categoriesStr.includes('lustra móveis');
-                
-                if (isDairy) {
-                  fetchedCategoria = 'Laticínios';
-                } else if (isBeverage) {
-                  fetchedCategoria = 'Bebidas';
-                } else if (isHygiene) {
-                  fetchedCategoria = 'Higiene';
-                } else if (isCleaning) {
-                  fetchedCategoria = 'Limpeza';
-                } else {
-                  fetchedCategoria = 'Mercearia';
-                }
-
-                setNome(fetchedNome);
-                setMarca(fetchedMarca);
-                setCategoria(fetchedCategoria);
-                productFound = true;
-
-                Alert.alert(
-                  'Sucesso (OSCBR)',
-                  `Produto encontrado na base OSCBR!\n\nNome: ${fetchedNome}\nMarca: ${fetchedMarca || 'Não informada'}\nCategoria sugerida: ${fetchedCategoria}`
-                );
-              } else {
-                oscbrErrorMsg = 'Produto não encontrado na base do OSCBR.';
-              }
-            } else {
-              oscbrErrorMsg = `Produto não localizado (status: ${productResponse.status}).`;
-            }
-          } else {
-            oscbrErrorMsg = 'Falha ao processar token de autenticação.';
-          }
-        } else {
-          let errorDetail = 'Credenciais inválidas';
-          try {
-            const errorJson = await tokenResponse.json();
-            errorDetail = errorJson.erro || errorJson.error_description || errorJson.message || JSON.stringify(errorJson);
-          } catch (e) {
-            try {
-              errorDetail = await tokenResponse.text();
-            } catch (e2) {}
-          }
-          console.warn('Erro ao autenticar no OSCBR (status:', tokenResponse.status, '):', errorDetail);
-          oscbrErrorMsg = `Erro ${tokenResponse.status} (Autenticação inválida)`;
-        }
-      } catch (oscbrError) {
-        console.error('Erro na integração com OSCBR:', oscbrError);
-        oscbrErrorMsg = 'Falha de conexão com o servidor (Erro de Rede).';
-      }
-    }
-
-    // Fallback: Se não encontrou no OSCBR (ou se não tem credenciais configuradas), tenta Open Food Facts
-    if (!productFound) {
-      try {
-        console.log('Tentando buscar dados no Open Food Facts (fallback)...');
-        const response = await fetch(`https://world.openfoodfacts.org/api/v0/product/${barcode.trim()}.json`);
+    try {
+      console.log('Tentando buscar dados no Open Food Facts...');
+      const response = await fetch(`https://world.openfoodfacts.org/api/v0/product/${barcode.trim()}.json`);
+      
+      const data = await response.json();
+      if (data && data.status === 1 && data.product) {
+        const prod = data.product;
+        const fetchedNome = prod.product_name || prod.product_name_pt || prod.product_name_en || '';
+        const fetchedMarca = prod.brands || '';
         
-        const data = await response.json();
-        if (data && data.status === 1 && data.product) {
-          const prod = data.product;
-          const fetchedNome = prod.product_name || prod.product_name_pt || prod.product_name_en || '';
-          const fetchedMarca = prod.brands || '';
-          
-          // Tentar categorizar
-          let fetchedCategoria = 'Outros';
-          const categoriesStr = ((prod.categories || '') + ' ' + (prod.categories_tags || []).join(' ')).toLowerCase();
-          
-          const isDairy = categoriesStr.includes('laticínios') || categoriesStr.includes('dairy') || categoriesStr.includes('leite') || categoriesStr.includes('queijo') || categoriesStr.includes('yogurt') || categoriesStr.includes('iogurte') || categoriesStr.includes('manteiga');
-          const isBeverage = categoriesStr.includes('bebidas') || categoriesStr.includes('beverages') || categoriesStr.includes('suco') || categoriesStr.includes('refrigerante') || categoriesStr.includes('cerva') || categoriesStr.includes('cerveja') || categoriesStr.includes('vinho') || categoriesStr.includes('água') || categoriesStr.includes('agua') || categoriesStr.includes('natar') || categoriesStr.includes('nectar');
-          const isHygiene = categoriesStr.includes('higiene') || categoriesStr.includes('hygiene') || categoriesStr.includes('sabonete') || categoriesStr.includes('shampoo') || categoriesStr.includes('dental') || categoriesStr.includes('creme dental') || categoriesStr.includes('desodorante') || categoriesStr.includes('fio dental');
-          const isCleaning = categoriesStr.includes('limpeza') || categoriesStr.includes('cleaning') || categoriesStr.includes('detergente') || categoriesStr.includes('amaciante') || categoriesStr.includes('sabão em pó') || categoriesStr.includes('sabao em po') || categoriesStr.includes('desinfetante') || categoriesStr.includes('saponáceo') || categoriesStr.includes('lustra móveis');
-          
-          if (isDairy) {
-            fetchedCategoria = 'Laticínios';
-          } else if (isBeverage) {
-            fetchedCategoria = 'Bebidas';
-          } else if (isHygiene) {
-            fetchedCategoria = 'Higiene';
-          } else if (isCleaning) {
-            fetchedCategoria = 'Limpeza';
-          } else {
-            fetchedCategoria = 'Mercearia';
-          }
-          
-          if (fetchedNome) setNome(fetchedNome);
-          if (fetchedMarca) setMarca(fetchedMarca);
-          setCategoria(fetchedCategoria);
-          productFound = true;
-          
-          let alertMsg = `Produto encontrado na base Open Food Facts!\n\nNome: ${fetchedNome}\nMarca: ${fetchedMarca || 'Não informada'}\nCategoria sugerida: ${fetchedCategoria}`;
-          
-          if (!hasOscbrCredentials) {
-            alertMsg += `\n\n💡 Dica: Configure suas credenciais do OSCBR na tela de Relatórios para consultar uma base brasileira mais abrangente.`;
-          }
-
-          Alert.alert('Sucesso (Open Food Facts)', alertMsg);
+        // Tentar categorizar
+        let fetchedCategoria = 'Outros';
+        const categoriesStr = ((prod.categories || '') + ' ' + (prod.categories_tags || []).join(' ')).toLowerCase();
+        
+        const isDairy = categoriesStr.includes('laticínios') || categoriesStr.includes('dairy') || categoriesStr.includes('leite') || categoriesStr.includes('queijo') || categoriesStr.includes('yogurt') || categoriesStr.includes('iogurte') || categoriesStr.includes('manteiga');
+        const isBeverage = categoriesStr.includes('bebidas') || categoriesStr.includes('beverages') || categoriesStr.includes('suco') || categoriesStr.includes('refrigerante') || categoriesStr.includes('cerva') || categoriesStr.includes('cerveja') || categoriesStr.includes('vinho') || categoriesStr.includes('água') || categoriesStr.includes('agua') || categoriesStr.includes('natar') || categoriesStr.includes('nectar');
+        const isHygiene = categoriesStr.includes('higiene') || categoriesStr.includes('hygiene') || categoriesStr.includes('sabonete') || categoriesStr.includes('shampoo') || categoriesStr.includes('dental') || categoriesStr.includes('creme dental') || categoriesStr.includes('desodorante') || categoriesStr.includes('fio dental');
+        const isCleaning = categoriesStr.includes('limpeza') || categoriesStr.includes('cleaning') || categoriesStr.includes('detergente') || categoriesStr.includes('amaciante') || categoriesStr.includes('sabão em pó') || categoriesStr.includes('sabao em po') || categoriesStr.includes('desinfetante') || categoriesStr.includes('saponáceo') || categoriesStr.includes('lustra móveis');
+        
+        if (isDairy) {
+          fetchedCategoria = 'Laticínios';
+        } else if (isBeverage) {
+          fetchedCategoria = 'Bebidas';
+        } else if (isHygiene) {
+          fetchedCategoria = 'Higiene';
+        } else if (isCleaning) {
+          fetchedCategoria = 'Limpeza';
         } else {
-          // Ambos falharam ou produto não encontrado
-          let errorMsg = 'Produto não encontrado nas bases de dados.';
-          if (hasOscbrCredentials && oscbrErrorMsg) {
-            errorMsg = `Não foi possível encontrar o produto.\n\n- OSCBR: ${oscbrErrorMsg}\n- Open Food Facts: Produto não cadastrado.`;
-          } else {
-            errorMsg = 'Produto não encontrado na base do Open Food Facts. Digite os dados manualmente.\n\n💡 Dica: Cadastre-se em gtin.rscsistemas.com.br e configure suas credenciais na tela de Relatórios para buscar também na base do OSCBR.';
-          }
-          Alert.alert('Não encontrado', errorMsg);
+          fetchedCategoria = 'Mercearia';
         }
-      } catch (error) {
-        console.error('Erro ao buscar produto na API de fallback:', error);
-        let errorMsg = 'Não foi possível conectar às bases públicas para obter os dados.';
-        if (hasOscbrCredentials && oscbrErrorMsg) {
-          errorMsg += `\n\nDetalhe da tentativa OSCBR:\n${oscbrErrorMsg}`;
-        }
-        Alert.alert('Erro de Conexão', errorMsg);
+        
+        if (fetchedNome) setNome(fetchedNome);
+        if (fetchedMarca) setMarca(fetchedMarca);
+        setCategoria(fetchedCategoria);
+        productFound = true;
+        
+        const alertMsg = `Produto encontrado!\n\nNome: ${fetchedNome}\nMarca: ${fetchedMarca || 'Não informada'}\nCategoria sugerida: ${fetchedCategoria}`;
+        Alert.alert('Sucesso', alertMsg);
+      } else {
+        Alert.alert('Não encontrado', 'Produto não encontrado na base de dados pública. Digite os dados manualmente.');
       }
+    } catch (error) {
+      console.error('Erro ao buscar produto na API pública:', error);
+      Alert.alert('Erro de Conexão', 'Não foi possível conectar à base pública para obter os dados.');
     }
 
     if (productFound) {
@@ -407,6 +292,7 @@ export default function ProductsScreen() {
 
     setIsFetchingApi(false);
   };
+
 
   // Recebe o código lido pela câmera no cadastro e fecha o scanner (evita duplicação).
   const handleScanFormCode = (code) => {
@@ -426,8 +312,8 @@ export default function ProductsScreen() {
       {/* Header Bar */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          <Ionicons name="cart" size={24} color="#FFF" style={{ marginRight: 8 }} />
-          <Text style={styles.headerTitle} numberOfLines={1}>Mercado Manager</Text>
+          <Image source={require('../../assets/logo_lucrocerto.png')} style={{ width: 28, height: 28, borderRadius: 6, marginRight: 8 }} />
+          <Text style={styles.headerTitle} numberOfLines={1}>LucroCerto</Text>
         </View>
         <View style={styles.headerRightGroup}>
           <SyncBadge />

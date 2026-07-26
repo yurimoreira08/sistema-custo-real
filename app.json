@@ -1,14 +1,14 @@
 {
   "expo": {
-    "name": "sitema-custo-real",
+    "name": "LucroCerto",
     "slug": "sitema-custo-real",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/logo_lucrocerto.png",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "splash": {
-      "image": "./assets/splash-icon.png",
+      "image": "./assets/logo_lucrocerto.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
@@ -16,18 +16,27 @@
       "supportsTablet": true
     },
     "android": {
+      "package": "com.yurimoreira08.lucrocerto",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
+        "foregroundImage": "./assets/logo_lucrocerto.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "extra": {
       "supabaseUrl": "https://oshesvkmupssuivhpntd.supabase.co",
-      "supabaseAnonKey": "sb_publishable_ewpiWouTZfUXYWwavUCUqQ_pA4NFVyY"
+      "supabaseAnonKey": "sb_publishable_ewpiWouTZfUXYWwavUCUqQ_pA4NFVyY",
+      "eas": {
+        "projectId": "f6f01b2e-da00-4d8e-80b2-ab6677359826"
+      }
     },
     "plugins": [
       [
@@ -37,6 +46,7 @@
         }
       ],
       "expo-audio"
-    ]
+    ],
+    "owner": "yurikauan08"
   }
 }

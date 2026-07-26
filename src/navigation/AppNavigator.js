@@ -15,8 +15,11 @@ import DailyClosingScreen from '../screens/DailyClosingScreen';
 const Stack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
 
-// Bottom Tab Navigator para o fluxo logado do Mercado Manager
+// Bottom Tab Navigator para o fluxo logado do LucroCerto
 function AppTabs() {
+  const { user } = useApp();
+  const isGerente = user?.cargo === 'gerente';
+
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
@@ -56,8 +59,8 @@ function AppTabs() {
       <Tab.Screen name="Início" component={DashboardScreen} />
       <Tab.Screen name="Produtos" component={ProductsScreen} />
       <Tab.Screen name="Venda" component={NewSaleScreen} />
-      <Tab.Screen name="Relatórios" component={ReportsScreen} />
-      <Tab.Screen name="Caixa" component={DailyClosingScreen} />
+      {isGerente && <Tab.Screen name="Relatórios" component={ReportsScreen} />}
+      {isGerente && <Tab.Screen name="Caixa" component={DailyClosingScreen} />}
     </Tab.Navigator>
   );
 }

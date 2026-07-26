@@ -21,7 +21,7 @@ import { feedbackFound, feedbackNotFound } from '../utils/scanFeedback';
 import SyncBadge from '../components/SyncBadge';
 
 export default function NewSaleScreen() {
-  const { products, settings, sales, refreshData } = useApp();
+  const { user, products, settings, sales, refreshData } = useApp();
   const [cart, setCart] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearchResults, setShowSearchResults] = useState(false);
@@ -123,7 +123,7 @@ export default function NewSaleScreen() {
 
     try {
       // Executa venda com controle transacional e de split
-      await registerSale(cart, settings);
+      await registerSale(cart, settings, user.gerente_id);
       
       Alert.alert(
         'Venda Finalizada!',

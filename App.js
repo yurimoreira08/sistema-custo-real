@@ -1,5 +1,5 @@
 import React from 'react';
-import { StyleSheet, ActivityIndicator, View, Text } from 'react-native';
+import { StyleSheet, ActivityIndicator, View, Text, Image } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { NavigationContainer } from '@react-navigation/native';
 import { AppProvider, useApp } from './src/context/AppContext';
@@ -14,8 +14,13 @@ function MainContent() {
     return (
       <View style={styles.loadingContainer}>
         <StatusBar style="light" />
-        <ActivityIndicator size="large" color="#6366F1" />
-        <Text style={styles.loadingText}>Inicializando Mercado Manager...</Text>
+        <Image 
+          source={require('./assets/logo_lucrocerto.png')} 
+          style={styles.loadingLogo}
+          resizeMode="contain"
+        />
+        <ActivityIndicator size="large" color="#6366F1" style={{ marginTop: 20 }} />
+        <Text style={styles.loadingText}>Inicializando LucroCerto...</Text>
         <Text style={styles.loadingSubtext}>Carregando banco de dados local</Text>
       </View>
     );
@@ -42,6 +47,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#0F172A', // Slate 900
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  loadingLogo: {
+    width: 120,
+    height: 120,
+    borderRadius: 24,
   },
   loadingText: {
     color: '#F8FAFC',

@@ -9,11 +9,13 @@ import {
   Platform, 
   ScrollView, 
   ActivityIndicator,
-  Alert
+  Alert,
+  Image
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { useApp } from '../context/AppContext';
 import { Ionicons } from '@expo/vector-icons';
+import { registerUser } from '../database/db';
 
 export default function LoginScreen() {
   const { login } = useApp();
@@ -21,6 +23,14 @@ export default function LoginScreen() {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+
+  // Estados de Cadastro
+  const [isSignup, setIsSignup] = useState(false);
+  const [signupNome, setSignupNome] = useState('');
+  const [signupEmail, setSignupEmail] = useState('');
+  const [signupSenha, setSignupSenha] = useState('');
+  const [signupConfirmarSenha, setSignupConfirmarSenha] = useState('');
+  const [showSignupPassword, setShowSignupPassword] = useState(false);
 
   const handleLoginSubmit = async () => {
     if (!username.trim() || !password.trim()) {
@@ -42,9 +52,48 @@ export default function LoginScreen() {
     }
   };
 
-  const handleAdminShortcut = () => {
-    setUsername('admin');
-    setPassword('123456');
+  const handleTestLogin = async () => {
+    setLoading(true);
+    try {
+      const success = await login('admin', '123456');
+      if (!success) {
+        Alert.alert('Erro de Login', 'Usuário ou senha de teste inválidos.');
+      }
+    } catch (error) {
+      Alert.alert('Erro', 'Ocorreu um erro ao tentar acessar em modo teste.');
+      console.error(error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSignupSubmit = async () => {
+    if (!signupNome.trim() || !signupEmail.trim() || !signupSenha.trim() || !signupConfirmarSenha.trim()) {
+      Alert.alert('Erro', 'Por favor, preencha todos os campos.');
+      return;
+    }
+    if (signupSenha !== signupConfirmarSenha) {
+      Alert.alert('Erro', 'As senhas não coincidem.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await registerUser(signupNome, signupEmail, signupSenha, 'gerente');
+      Alert.alert('Sucesso', 'Comércio e gerente cadastrados com sucesso! Faça login para começar.');
+      setUsername(signupEmail);
+      setPassword(signupSenha);
+      setIsSignup(false);
+      // Limpar campos
+      setSignupNome('');
+      setSignupEmail('');
+      setSignupSenha('');
+      setSignupConfirmarSenha('');
+    } catch (error) {
+      Alert.alert('Erro no Cadastro', error.message || 'Não foi possível realizar o cadastro.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -54,13 +103,15 @@ export default function LoginScreen() {
     >
       <StatusBar style="light" />
       <ScrollView contentContainerStyle={styles.scrollContainer} keyboardShouldPersistTaps="handled">
-        {/* Parte Superior: Fundo Azul */}
+        {/* Parte Superior: Fundo Azul com Logo */}
         <View style={styles.topSection}>
-          <TouchableOpacity style={styles.logoBtn} onPress={handleAdminShortcut} activeOpacity={0.9}>
-            <Ionicons name="cart" size={60} color="#FFFFFF" style={styles.logoIcon} />
-          </TouchableOpacity>
-          <Text style={styles.brandTitle}>Mercado Manager</Text>
-          <Text style={styles.brandSubtitle}>Sistema de Controle de Estoque & Custos</Text>
+          <Image 
+            source={require('../../assets/logo_lucrocerto.png')} 
+            style={styles.logoImage} 
+            resizeMode="contain"
+          />
+          <Text style={styles.brandTitle}>LucroCerto</Text>
+          <Text style={styles.brandSubtitle}>Gestão Inteligente de Estoque, Custos & Lucro</Text>
           
           {/* Cápsulas de Funcionalidades */}
           <View style={styles.capsulesContainer}>
@@ -76,78 +127,185 @@ export default function LoginScreen() {
           </View>
         </View>
 
-        {/* Parte Inferior: Card Branco */}
+        {/* Parte Inferior: Formulário de Login / Cadastro */}
         <View style={styles.bottomCard}>
-          <View style={styles.inputGroup}>
-            <Text style={styles.inputLabel}>Usuário</Text>
-            <View style={styles.inputWrapper}>
-              <TextInput
-                style={styles.textInput}
-                placeholder="Digite seu usuário"
-                placeholderTextColor="#A0AEC0"
-                value={username}
-                onChangeText={setUsername}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-            </View>
-          </View>
+          {!isSignup ? (
+            // Form de Login
+            <View style={{ flex: 1 }}>
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Usuário ou E-mail</Text>
+                <View style={styles.inputWrapper}>
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder="Digite seu usuário ou e-mail"
+                    placeholderTextColor="#A0AEC0"
+                    value={username}
+                    onChangeText={setUsername}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                </View>
+              </View>
 
-          <View style={styles.inputGroup}>
-            <Text style={styles.inputLabel}>Senha</Text>
-            <View style={styles.inputWrapper}>
-              <TextInput
-                style={styles.textInput}
-                placeholder="Digite sua senha"
-                placeholderTextColor="#A0AEC0"
-                value={password}
-                onChangeText={setPassword}
-                secureTextEntry={!showPassword}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Senha</Text>
+                <View style={styles.inputWrapper}>
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder="Digite sua senha"
+                    placeholderTextColor="#A0AEC0"
+                    value={password}
+                    onChangeText={setPassword}
+                    secureTextEntry={!showPassword}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                  <TouchableOpacity 
+                    style={styles.eyeBtn} 
+                    onPress={() => setShowPassword(!showPassword)}
+                  >
+                    <Ionicons 
+                      name={showPassword ? "eye-off-outline" : "eye-outline"} 
+                      size={20} 
+                      color="#A0AEC0" 
+                    />
+                  </TouchableOpacity>
+                </View>
+              </View>
+
               <TouchableOpacity 
-                style={styles.eyeBtn} 
-                onPress={() => setShowPassword(!showPassword)}
+                style={styles.loginBtn} 
+                onPress={handleLoginSubmit}
+                disabled={loading}
               >
-                <Ionicons 
-                  name={showPassword ? "eye-off-outline" : "eye-outline"} 
-                  size={20} 
-                  color="#A0AEC0" 
-                />
+                {loading ? (
+                  <ActivityIndicator color="#FFF" />
+                ) : (
+                  <Text style={styles.loginBtnText}>Entrar</Text>
+                )}
+              </TouchableOpacity>
+
+              {/* Botão de Modo Teste */}
+              <TouchableOpacity 
+                style={styles.testBtn} 
+                onPress={handleTestLogin}
+                disabled={loading}
+              >
+                <Text style={styles.testBtnText}>⚡ Acessar em Modo Teste (Admin)</Text>
+              </TouchableOpacity>
+
+              {/* Link de alternância para Cadastro */}
+              <TouchableOpacity 
+                style={styles.toggleBtn}
+                onPress={() => setIsSignup(true)}
+              >
+                <Text style={styles.toggleText}>Novo comércio? <Text style={styles.toggleTextBold}>Cadastrar Gerente</Text></Text>
               </TouchableOpacity>
             </View>
-          </View>
+          ) : (
+            // Form de Cadastro (Gerente)
+            <View style={{ flex: 1 }}>
+              <Text style={styles.formTitle}>Cadastrar Gerente / Comércio</Text>
+              <Text style={styles.formSubtitle}>Crie a conta de administrador para gerenciar seu negócio.</Text>
 
-          <TouchableOpacity style={styles.forgotBtn}>
-            <Text style={styles.forgotText}>Esqueceu a senha?</Text>
-          </TouchableOpacity>
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Nome Completo</Text>
+                <View style={styles.inputWrapper}>
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder="Ex: João da Silva"
+                    placeholderTextColor="#A0AEC0"
+                    value={signupNome}
+                    onChangeText={setSignupNome}
+                    autoCorrect={false}
+                  />
+                </View>
+              </View>
 
-          <TouchableOpacity 
-            style={styles.loginBtn} 
-            onPress={handleLoginSubmit}
-            disabled={loading}
-          >
-            {loading ? (
-              <ActivityIndicator color="#FFF" />
-            ) : (
-              <Text style={styles.loginBtnText}>Entrar</Text>
-            )}
-          </TouchableOpacity>
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>E-mail / Usuário</Text>
+                <View style={styles.inputWrapper}>
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder="Ex: joao@comercio.com"
+                    placeholderTextColor="#A0AEC0"
+                    value={signupEmail}
+                    onChangeText={setSignupEmail}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                </View>
+              </View>
 
-          {/* Dica para o avaliador */}
-          {username === '' && (
-            <TouchableOpacity onPress={handleAdminShortcut} style={styles.tipContainer}>
-              <Text style={styles.tipText}>💡 Clique aqui para preencher dados do Admin</Text>
-            </TouchableOpacity>
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Senha</Text>
+                <View style={styles.inputWrapper}>
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder="Crie uma senha de acesso"
+                    placeholderTextColor="#A0AEC0"
+                    value={signupSenha}
+                    onChangeText={setSignupSenha}
+                    secureTextEntry={!showSignupPassword}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                  <TouchableOpacity 
+                    style={styles.eyeBtn} 
+                    onPress={() => setShowSignupPassword(!showSignupPassword)}
+                  >
+                    <Ionicons 
+                      name={showSignupPassword ? "eye-off-outline" : "eye-outline"} 
+                      size={20} 
+                      color="#A0AEC0" 
+                    />
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Confirmar Senha</Text>
+                <View style={styles.inputWrapper}>
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder="Repita a senha criada"
+                    placeholderTextColor="#A0AEC0"
+                    value={signupConfirmarSenha}
+                    onChangeText={setSignupConfirmarSenha}
+                    secureTextEntry={!showSignupPassword}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                </View>
+              </View>
+
+              <TouchableOpacity 
+                style={styles.loginBtn} 
+                onPress={handleSignupSubmit}
+                disabled={loading}
+              >
+                {loading ? (
+                  <ActivityIndicator color="#FFF" />
+                ) : (
+                  <Text style={styles.loginBtnText}>Cadastrar Comércio</Text>
+                )}
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                style={styles.toggleBtn}
+                onPress={() => setIsSignup(false)}
+              >
+                <Text style={styles.toggleText}>Já possui uma conta? <Text style={styles.toggleTextBold}>Entrar</Text></Text>
+              </TouchableOpacity>
+            </View>
           )}
 
           {/* Rodapé */}
           <View style={styles.footerRow}>
             <View style={styles.footerLeft}>
-              <Text style={styles.footerText}>🔒 Acesso restrito a funcionários</Text>
+              <Text style={styles.footerText}>🔒 Acesso criptografado e seguro</Text>
             </View>
-            <Text style={styles.footerVersion}>v1.0.0</Text>
+            <Text style={styles.footerVersion}>v2.0.0</Text>
           </View>
         </View>
       </ScrollView>
@@ -165,32 +323,28 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
   },
   topSection: {
-    backgroundColor: '#1E63EC', // Azul royal vivo idêntico ao da imagem
+    backgroundColor: '#1E63EC',
     alignItems: 'center',
     paddingTop: Platform.OS === 'ios' ? 70 : 60,
     paddingBottom: 40,
-    borderBottomLeftRadius: 0,
-    borderBottomRightRadius: 0,
   },
-  logoBtn: {
+  logoImage: {
+    width: 160,
+    height: 160,
     marginBottom: 16,
   },
-  logoIcon: {
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-  },
   brandTitle: {
-    fontSize: 30,
+    fontSize: 32,
     fontWeight: 'bold',
     color: '#FFFFFF',
     letterSpacing: 0.5,
   },
   brandSubtitle: {
     fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.8)',
+    color: 'rgba(255, 255, 255, 0.85)',
     marginTop: 6,
+    textAlign: 'center',
+    paddingHorizontal: 20,
   },
   capsulesContainer: {
     flexDirection: 'row',
@@ -199,7 +353,7 @@ const styles = StyleSheet.create({
     marginTop: 24,
   },
   capsule: {
-    backgroundColor: 'rgba(255, 255, 255, 0.2)', // cápsulas transparentes
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
     borderRadius: 20,
     paddingHorizontal: 12,
     paddingVertical: 6,
@@ -215,18 +369,29 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#FFFFFF',
     paddingHorizontal: 24,
-    paddingTop: 32,
+    paddingTop: 28,
     paddingBottom: 24,
     justifyContent: 'flex-start',
   },
-  inputGroup: {
+  formTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#2D3748',
+    marginBottom: 6,
+  },
+  formSubtitle: {
+    fontSize: 13,
+    color: '#718096',
     marginBottom: 20,
   },
+  inputGroup: {
+    marginBottom: 16,
+  },
   inputLabel: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '600',
-    color: '#2D3748', // Cinza escuro
-    marginBottom: 8,
+    color: '#2D3748',
+    marginBottom: 6,
   },
   inputWrapper: {
     flexDirection: 'row',
@@ -234,27 +399,18 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#E2E8F0', // Borda cinza clara idêntica à imagem
+    borderColor: '#E2E8F0',
     paddingHorizontal: 16,
-    height: 52,
+    height: 50,
   },
   textInput: {
     flex: 1,
     color: '#2D3748',
-    fontSize: 16,
+    fontSize: 15,
     height: '100%',
   },
   eyeBtn: {
     padding: 6,
-  },
-  forgotBtn: {
-    alignSelf: 'flex-end',
-    marginBottom: 28,
-  },
-  forgotText: {
-    color: '#4A5568', // Cor escura intermediária
-    fontSize: 14,
-    fontWeight: '500',
   },
   loginBtn: {
     backgroundColor: '#1E63EC',
@@ -262,6 +418,7 @@ const styles = StyleSheet.create({
     height: 50,
     justifyContent: 'center',
     alignItems: 'center',
+    marginTop: 10,
     shadowColor: '#1E63EC',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.2,
@@ -270,21 +427,38 @@ const styles = StyleSheet.create({
   },
   loginBtnText: {
     color: '#FFFFFF',
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: 'bold',
     letterSpacing: 0.5,
   },
-  tipContainer: {
-    alignItems: 'center',
-    marginTop: 16,
-    padding: 10,
+  testBtn: {
     backgroundColor: '#EDF2F7',
+    borderWidth: 1.5,
+    borderColor: '#CBD5E0',
     borderRadius: 8,
+    height: 50,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 12,
   },
-  tipText: {
+  testBtnText: {
     color: '#2B6CB0',
-    fontSize: 13,
-    fontWeight: '500',
+    fontSize: 15,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
+  },
+  toggleBtn: {
+    alignItems: 'center',
+    marginTop: 20,
+    paddingVertical: 8,
+  },
+  toggleText: {
+    color: '#718096',
+    fontSize: 14,
+  },
+  toggleTextBold: {
+    color: '#1E63EC',
+    fontWeight: 'bold',
   },
   footerRow: {
     flexDirection: 'row',

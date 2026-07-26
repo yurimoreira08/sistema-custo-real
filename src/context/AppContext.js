@@ -130,27 +130,32 @@ export function AppProvider({ children }) {
   };
 
   const loadProducts = async () => {
-    const list = await fetchProducts();
+    if (!user) return;
+    const list = await fetchProducts(user.gerente_id);
     setProducts(list);
   };
 
   const loadSettings = async () => {
-    const currentSettings = await fetchSettings();
+    if (!user) return;
+    const currentSettings = await fetchSettings(user.gerente_id);
     setSettings(currentSettings);
   };
 
   const loadSalesHistory = async () => {
-    const list = await fetchSalesHistory();
+    if (!user) return;
+    const list = await fetchSalesHistory(user.gerente_id);
     setSales(list);
   };
 
   const loadDashboardStats = async () => {
-    const stats = await fetchDashboardStats();
+    if (!user) return;
+    const stats = await fetchDashboardStats(user.gerente_id);
     setDashboardStats(stats);
   };
 
   const loadDashboardDetails = async () => {
-    const details = await fetchDashboardDetails();
+    if (!user) return;
+    const details = await fetchDashboardDetails(user.gerente_id);
     setDashboardDetails(details);
   };
 
@@ -167,8 +172,9 @@ export function AppProvider({ children }) {
     setUser(null);
   };
 
-  const handleUpdateSettings = async (cmv, opex, lucro, oscbrUsuario = null, oscbrSenha = null) => {
-    await saveSettings(cmv, opex, lucro, oscbrUsuario, oscbrSenha);
+  const handleUpdateSettings = async (cmv, opex, lucro) => {
+    if (!user) return;
+    await saveSettings(cmv, opex, lucro, user.gerente_id);
     await loadSettings();
     await loadDashboardStats();
     await loadDashboardDetails();
