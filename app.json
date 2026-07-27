@@ -5,9 +5,8 @@
     "slug": "sitema-custo-real",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/logo_lucrocerto.png",
+    "icon": "./assets/favicon.png",
     "userInterfaceStyle": "light",
-    "newArchEnabled": false,
     "splash": {
       "image": "./assets/logo_lucrocerto.png",
       "resizeMode": "contain",
