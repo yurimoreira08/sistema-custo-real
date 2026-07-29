@@ -19,6 +19,7 @@ import { Ionicons } from '@expo/vector-icons';
 import BarcodeScannerModal from '../components/BarcodeScannerModal';
 import { feedbackFound, feedbackNotFound } from '../utils/scanFeedback';
 import SyncBadge from '../components/SyncBadge';
+import ConfirmationModal from '../components/ConfirmationModal';
 
 export default function NewSaleScreen() {
   const { user, products, settings, sales, refreshData } = useApp();
@@ -26,11 +27,19 @@ export default function NewSaleScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearchResults, setShowSearchResults] = useState(false);
   const [scannerVisible, setScannerVisible] = useState(false);
+  const [clearCartModalVisible, setClearCartModalVisible] = useState(false);
+  const [checkoutModalVisible, setCheckoutModalVisible] = useState(false);
+  const [successModalVisible, setSuccessModalVisible] = useState(false);
 
-  // Calcula número da próxima venda baseado no histórico (ex: #0024 se vendas = 23)
+  const [alertVisible, setAlertVisible] = useState(false);
+  const [alertConfig, setAlertConfig] = useState({ title: '', message: '', type: 'info' });
+  const showCustomAlert = (title, message, type = 'info') => {
+    setAlertConfig({ title, message, type });
+    setAlertVisible(true);
+  };
+
   const nextSaleNum = `#${String(sales.length + 1).padStart(4, '0')}`;
 
-  // Filtrar produtos de acordo com a query de busca
   const searchResults = products.filter(p => 
     p.nome.toLowerCase().includes(searchQuery.toLowerCase()) || 
     (p.marca && p.marca.toLowerCase().includes(searchQuery.toLowerCase())) ||
@@ -45,9 +54,8 @@ export default function NewSaleScreen() {
   };
 
   const handleSelectItem = (product) => {
-    // RN02: Bloqueio de Estoque se estoque for zero
     if (product.estoque <= 0) {
-      Alert.alert('Bloqueio de Estoque', 'Este produto está com estoque zerado.');
+      showCustomAlert('Bloqueio de Estoque', 'Este produto está com estoque zerado.', 'danger');
       return;
     }
 
@@ -55,9 +63,8 @@ export default function NewSaleScreen() {
     
     if (cartIndex > -1) {
       const currentQty = cart[cartIndex].quantidade;
-      // RN02: Bloqueio de Estoque se a quantidade solicitada exceder o estoque
       if (currentQty + 1 > product.estoque) {
-        Alert.alert('Bloqueio de Estoque', `Não há estoque suficiente de "${product.nome}". Estoque disponível: ${product.estoque} un.`);
+        showCustomAlert('Bloqueio de Estoque', `Não há estoque suficiente de "${product.nome}". Estoque disponível: ${product.estoque} un.`, 'danger');
         return;
       }
       const updatedCart = [...cart];
@@ -67,7 +74,6 @@ export default function NewSaleScreen() {
       setCart([...cart, { ...product, quantidade: 1 }]);
     }
     
-    // Resetar busca
     setSearchQuery('');
     setShowSearchResults(false);
   };
@@ -82,13 +88,11 @@ export default function NewSaleScreen() {
     const newQty = cart[cartIndex].quantidade + change;
 
     if (newQty <= 0) {
-      // Remover do carrinho
       const updatedCart = cart.filter(item => item.id !== productId);
       setCart(updatedCart);
     } else {
-      // RN02: Validar estoque antes de incrementar
       if (newQty > product.estoque) {
-        Alert.alert('Bloqueio de Estoque', `Não é possível adicionar mais unidades. Estoque disponível: ${product.estoque} un.`);
+        showCustomAlert('Bloqueio de Estoque', `Não é possível adicionar mais unidades. Estoque disponível: ${product.estoque} un.`, 'danger');
         return;
       }
       const updatedCart = [...cart];
@@ -99,50 +103,33 @@ export default function NewSaleScreen() {
 
   const handleClearCart = () => {
     if (cart.length === 0) return;
-    Alert.alert(
-      'Cancelar Venda',
-      'Tem certeza de que deseja esvaziar o carrinho?',
-      [
-        { text: 'Não', style: 'cancel' },
-        { text: 'Sim', style: 'destructive', onPress: () => setCart([]) }
-      ]
-    );
+    setClearCartModalVisible(true);
   };
 
-  // Cálculos do Carrinho
   const subtotal = cart.reduce((sum, item) => sum + (item.preco_venda * item.quantidade), 0);
   const totalItensCount = cart.reduce((sum, item) => sum + item.quantidade, 0);
   
-  // Splits projetados baseados na configuração global (RN01)
   const cmvSplit = parseFloat((subtotal * (settings.percentual_cmv / 100)).toFixed(2));
   const opexSplit = parseFloat((subtotal * (settings.percentual_opex / 100)).toFixed(2));
   const lucroSplit = parseFloat((subtotal - cmvSplit - opexSplit).toFixed(2));
 
-  const handleCheckout = async () => {
+  const handleCheckout = () => {
     if (cart.length === 0) return;
+    setCheckoutModalVisible(true);
+  };
 
+  const confirmCheckout = async () => {
+    setCheckoutModalVisible(false);
     try {
-      // Executa venda com controle transacional e de split
       await registerSale(cart, settings, user.gerente_id);
-      
-      Alert.alert(
-        'Venda Finalizada!',
-        `Faturamento Total: ${formatCurrency(subtotal)}\n\n` +
-        `Split de Faturamento:\n` +
-        `• Reposição (CMV ${settings.percentual_cmv}%): ${formatCurrency(cmvSplit)}\n` +
-        `• Operações (OpEx ${settings.percentual_opex}%): ${formatCurrency(opexSplit)}\n` +
-        `• Lucro Líquido (${settings.percentual_lucro}%): ${formatCurrency(lucroSplit)}`,
-        [{ text: 'OK', onPress: () => setCart([]) }]
-      );
-
+      setSuccessModalVisible(true);
       await refreshData();
     } catch (error) {
-      Alert.alert('Erro ao Finalizar Venda', error.message || 'Houve um erro no processamento.');
+      showCustomAlert('Erro ao Finalizar Venda', error.message || 'Houve um erro no processamento.', 'danger');
       console.error(error);
     }
   };
 
-  // Busca um produto por código de barras exato (após trim), suportando EAN e PLUs curtos.
   const findByBarcode = (code) => {
     const cleanCode = code.trim();
     if (!cleanCode) return null;
@@ -152,15 +139,13 @@ export default function NewSaleScreen() {
   const handleSearchTextChange = (text) => {
     setSearchQuery(text);
 
-    // Auto-adição rápida para leitores físicos: se o texto digitado corresponder
-    // exatamente a um código de barras cadastrado, adiciona ao carrinho na hora.
     const cleanCode = text.trim();
     if (cleanCode.length >= 3) {
       const exactMatch = findByBarcode(cleanCode);
       if (exactMatch) {
         feedbackFound();
         handleSelectItem(exactMatch);
-        setSearchQuery(''); // Limpa o input para a próxima leitura imediata
+        setSearchQuery('');
         setShowSearchResults(false);
         return;
       }
@@ -169,7 +154,6 @@ export default function NewSaleScreen() {
     setShowSearchResults(text.length > 0);
   };
 
-  // Reforço para o Enter enviado pelo leitor físico ao final da leitura.
   const handleSubmitEditing = () => {
     const exactMatch = findByBarcode(searchQuery);
     if (exactMatch) {
@@ -179,8 +163,6 @@ export default function NewSaleScreen() {
     }
   };
 
-  // Recebe o código lido pela câmera. Ao identificar um produto, fecha o scanner
-  // para evitar leituras/adições duplicadas do mesmo código.
   const handleScanCode = (code) => {
     const product = findByBarcode(code);
     if (product) {
@@ -189,7 +171,7 @@ export default function NewSaleScreen() {
       setScannerVisible(false);
     } else {
       feedbackNotFound();
-      Alert.alert('Produto não encontrado', `Nenhum produto cadastrado com o código "${code.trim()}".`);
+      showCustomAlert('Produto não encontrado', `Nenhum produto cadastrado com o código "${code.trim()}".`, 'danger');
     }
   };
 
@@ -200,7 +182,6 @@ export default function NewSaleScreen() {
         <Text style={styles.cartItemBrand}>{item.marca || 'Sem marca'} • {formatCurrency(item.preco_venda)}/un</Text>
       </View>
       <View style={styles.cartItemRight}>
-        {/* Controles de Quantidade */}
         <View style={styles.qtyContainer}>
           <TouchableOpacity style={styles.qtyBtn} onPress={() => handleUpdateQty(item.id, -1)}>
             <Ionicons name="remove" size={14} color="#4A5568" />
@@ -400,6 +381,63 @@ export default function NewSaleScreen() {
           onClose={() => setScannerVisible(false)}
         />
       </Modal>
+
+      {/* Modal de confirmação de esvaziamento de carrinho */}
+      <ConfirmationModal
+        visible={clearCartModalVisible}
+        title="Cancelar Venda"
+        message="Tem certeza de que deseja esvaziar o carrinho?"
+        confirmText="Sim, esvaziar"
+        cancelText="Não"
+        type="danger"
+        onConfirm={() => {
+          setCart([]);
+          setClearCartModalVisible(false);
+        }}
+        onCancel={() => setClearCartModalVisible(false)}
+      />
+
+      {/* Modal de confirmação de checkout */}
+      <ConfirmationModal
+        visible={checkoutModalVisible}
+        title="Confirmar Venda"
+        message={`Deseja finalizar esta venda no valor total de ${formatCurrency(subtotal)}?`}
+        confirmText="Finalizar"
+        cancelText="Cancelar"
+        type="info"
+        onConfirm={confirmCheckout}
+        onCancel={() => setCheckoutModalVisible(false)}
+      />
+
+      {/* Modal de sucesso pós-venda (exibição de splits) */}
+      <ConfirmationModal
+        visible={successModalVisible}
+        title="Venda Finalizada!"
+        message={
+          `Faturamento Total: ${formatCurrency(subtotal)}\n\n` +
+          `Split de Faturamento:\n` +
+          `• Reposição (CMV ${settings.percentual_cmv}%): ${formatCurrency(cmvSplit)}\n` +
+          `• Operações (OpEx ${settings.percentual_opex}%): ${formatCurrency(opexSplit)}\n` +
+          `• Lucro Líquido (${settings.percentual_lucro}%): ${formatCurrency(lucroSplit)}`
+        }
+        confirmText="OK"
+        cancelText={null}
+        type="info"
+        onConfirm={() => {
+          setCart([]);
+          setSuccessModalVisible(false);
+        }}
+      />
+      {/* Alerta genérico customizado */}
+      <ConfirmationModal
+        visible={alertVisible}
+        title={alertConfig.title}
+        message={alertConfig.message}
+        confirmText="OK"
+        cancelText={null}
+        type={alertConfig.type}
+        onConfirm={() => setAlertVisible(false)}
+      />
     </SafeAreaView>
   );
 }

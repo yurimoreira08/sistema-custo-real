@@ -6,8 +6,6 @@ import {
   ScrollView, 
   TouchableOpacity, 
   RefreshControl,
-  FlatList,
-  Dimensions,
   Image
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -17,6 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import SyncBadge from '../components/SyncBadge';
 
+// Tela principal (Dashboard) que exibe o resumo financeiro, controle de estoque e últimas vendas
 export default function DashboardScreen() {
   const { user, logout, dashboardDetails, refreshData } = useApp();
   const [refreshing, setRefreshing] = useState(false);
@@ -28,7 +27,6 @@ export default function DashboardScreen() {
     setRefreshing(false);
   }, [refreshData]);
 
-  // Formatar valores monetários em R$
   const formatCurrency = (val) => {
     return new Intl.NumberFormat('pt-BR', {
       style: 'currency',
@@ -36,7 +34,6 @@ export default function DashboardScreen() {
     }).format(val || 0);
   };
 
-  // Saudação de acordo com o horário do dia
   const getGreeting = () => {
     const hours = new Date().getHours();
     if (hours >= 6 && hours < 12) return 'Bom dia';
@@ -44,7 +41,6 @@ export default function DashboardScreen() {
     return 'Boa noite';
   };
 
-  // Formatar data: "Quinta, 4 de jun de 2026"
   const getFormattedDate = () => {
     const date = new Date();
     const weekdays = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
@@ -58,7 +54,6 @@ export default function DashboardScreen() {
     return `${weekday}, ${day} de ${month} de ${year}`;
   };
 
-  // Calcula o tempo decorrido amigável
   const getTimeElapsed = (dateString) => {
     const diffMs = new Date() - new Date(dateString);
     const diffMins = Math.floor(diffMs / 60000);
@@ -85,10 +80,9 @@ export default function DashboardScreen() {
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <StatusBar style="light" />
       
-      {/* Header Bar */}
       <View style={styles.header}>
         <View style={[styles.headerLeft, { flex: 1 }]}>
-          <Image source={require('../../assets/logo_lucrocerto.png')} style={{ width: 28, height: 28, borderRadius: 6, marginRight: 8 }} />
+          <Image source={require('../../assets/logo_lucrocerto.png')} style={styles.headerLogo} />
           <Text style={[styles.headerTitle, { flexShrink: 1 }]} numberOfLines={1}>LucroCerto</Text>
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
@@ -105,7 +99,6 @@ export default function DashboardScreen() {
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#1E63EC" />
         }
       >
-        {/* Banner de Boas-Vindas */}
         <View style={styles.welcomeBanner}>
           <View style={styles.bannerInfo}>
             <Text style={styles.welcomeText}>
@@ -116,10 +109,8 @@ export default function DashboardScreen() {
           <Ionicons name="cart" size={72} color="rgba(255, 255, 255, 0.15)" style={styles.bannerCartIcon} />
         </View>
 
-        {/* Grid de Cards (2x2) */}
         <View style={styles.gridContainer}>
           <View style={styles.gridRow}>
-            {/* Card 1: Vendas Hoje */}
             <View style={styles.statCard}>
               <Text style={styles.cardEmoji}>💰</Text>
               <Text style={styles.cardLabel}>VENDAS HOJE</Text>
@@ -129,7 +120,6 @@ export default function DashboardScreen() {
               </View>
             </View>
 
-            {/* Card 2: Transações */}
             <View style={styles.statCard}>
               <Text style={styles.cardEmoji}>📄</Text>
               <Text style={styles.cardLabel}>TRANSAÇÕES</Text>
@@ -139,7 +129,6 @@ export default function DashboardScreen() {
           </View>
 
           <View style={styles.gridRow}>
-            {/* Card 3: Itens Vendidos */}
             <View style={styles.statCard}>
               <Text style={styles.cardEmoji}>📦</Text>
               <Text style={styles.cardLabel}>ITENS VENDIDOS</Text>
@@ -147,7 +136,6 @@ export default function DashboardScreen() {
               <Text style={styles.cardSubtext}>unidades</Text>
             </View>
 
-            {/* Card 4: Estoque Baixo */}
             <View style={styles.statCard}>
               <Text style={styles.cardEmoji}>⚠️</Text>
               <Text style={styles.cardLabel}>ESTOQUE BAIXO</Text>
@@ -159,7 +147,6 @@ export default function DashboardScreen() {
           </View>
         </View>
 
-        {/* Título Seção Últimas Vendas */}
         <View style={styles.sectionHeader}>
           <View style={styles.sectionHeaderLeft}>
             <Text style={{ fontSize: 16, marginRight: 6 }}>📋</Text>
@@ -172,7 +159,6 @@ export default function DashboardScreen() {
           )}
         </View>
 
-        {/* Card Azul Container de Vendas de Hoje */}
         <View style={styles.salesContainer}>
           <View style={styles.salesHeader}>
             <View style={styles.salesHeaderLeft}>
@@ -225,7 +211,7 @@ export default function DashboardScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#1E63EC', // Mantém o azul no topo seguro
+    backgroundColor: '#1E63EC',
   },
   header: {
     backgroundColor: '#1E63EC',
@@ -239,8 +225,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
+  headerLogo: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    marginRight: 10,
+    backgroundColor: '#FFFFFF',
+    padding: 3,
+  },
   headerTitle: {
-    fontSize: 20,
+    fontSize: 22,
     fontWeight: 'bold',
     color: '#FFF',
   },
@@ -256,7 +250,7 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   scrollContainer: {
-    backgroundColor: '#F0F4F8', // Cor de fundo cinza azulada idêntica à imagem
+    backgroundColor: '#F0F4F8',
     padding: 16,
     paddingBottom: 32,
     flexGrow: 1,
@@ -460,7 +454,7 @@ const styles = StyleSheet.create({
   saleItemValue: {
     fontSize: 15,
     fontWeight: 'bold',
-    color: '#2F855A', // Verde de faturamento
+    color: '#2F855A',
     flexShrink: 0,
     marginLeft: 8,
     textAlign: 'right',

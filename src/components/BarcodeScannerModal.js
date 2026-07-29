@@ -4,18 +4,12 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
 import { feedbackRead } from '../utils/scanFeedback';
 
-// Modal de leitura de código de barras usando a câmera (Expo SDK 54 - expo-camera).
-// Props:
-//   onScan(codigo): chamado a cada leitura válida (mantém a câmera ativa para multi-leitura).
-//   onClose(): fecha o scanner.
+// Abre um modal de câmera para ler códigos de barra de produtos em tempo real
 export default function BarcodeScannerModal({ onScan, onClose }) {
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
-  // Trava síncrona: garante que cada leitura dispare onScan uma única vez,
-  // mesmo que a câmera emita vários frames do mesmo código antes de reagir.
   const scanLock = useRef(false);
 
-  // Permissão ainda não carregada
   if (!permission) {
     return (
       <View style={styles.center}>
@@ -24,7 +18,6 @@ export default function BarcodeScannerModal({ onScan, onClose }) {
     );
   }
 
-  // Permissão negada
   if (!permission.granted) {
     return (
       <View style={styles.center}>
@@ -41,7 +34,6 @@ export default function BarcodeScannerModal({ onScan, onClose }) {
   }
 
   const handleBarCodeScanned = ({ data }) => {
-    // Trava síncrona contra frames duplicados do mesmo código
     if (scanLock.current) return;
     scanLock.current = true;
     setScanned(true);
@@ -52,7 +44,6 @@ export default function BarcodeScannerModal({ onScan, onClose }) {
       onScan(cleanCode);
     }
 
-    // Reabilita a leitura caso a câmera continue aberta (ex.: código não encontrado)
     setTimeout(() => {
       scanLock.current = false;
       setScanned(false);
@@ -69,7 +60,6 @@ export default function BarcodeScannerModal({ onScan, onClose }) {
         onBarcodeScanned={scanned ? undefined : handleBarCodeScanned}
       />
 
-      {/* Overlay com moldura de mira e controles */}
       <View style={styles.overlay}>
         <View style={styles.overlayTop}>
           <Text style={styles.scanText}>Aponte para o código de barras</Text>
@@ -79,7 +69,7 @@ export default function BarcodeScannerModal({ onScan, onClose }) {
 
         <View style={styles.overlayBottom}>
           <Text style={styles.hintText}>
-            {scanned ? '✓ Lido! Aguarde para a próxima leitura...' : 'A câmera permanece ativa para várias leituras.'}
+            {scanned ? '✓ Lido! Aguarde para a próxima leitura...' : 'A câmera permanece activa para várias leituras.'}
           </Text>
           <TouchableOpacity style={styles.closeButton} onPress={onClose}>
             <Ionicons name="close" size={18} color="#FFF" style={{ marginRight: 6 }} />

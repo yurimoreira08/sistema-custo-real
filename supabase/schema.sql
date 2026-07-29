@@ -5,6 +5,15 @@
 -- =============================================
 
 -- ------------------------------------------------
+-- Limpeza de tabelas antigas para redefinição segura de chaves e colunas
+-- ------------------------------------------------
+DROP TABLE IF EXISTS "ItensVenda" CASCADE;
+DROP TABLE IF EXISTS "Venda" CASCADE;
+DROP TABLE IF EXISTS "Produto" CASCADE;
+DROP TABLE IF EXISTS "Configuracoes" CASCADE;
+DROP TABLE IF EXISTS "Usuario" CASCADE;
+
+-- ------------------------------------------------
 -- Extensões úteis
 -- ------------------------------------------------
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -18,6 +27,8 @@ CREATE TABLE IF NOT EXISTS "Usuario" (
   nome       TEXT         NOT NULL,
   email      TEXT         NOT NULL UNIQUE,
   senha      TEXT         NOT NULL,
+  cargo      TEXT         NOT NULL DEFAULT 'gerente',
+  gerente_id BIGINT,
   created_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
@@ -30,7 +41,8 @@ COMMENT ON COLUMN "Usuario".senha     IS 'Hash da senha (manter seguro no backen
 -- Catálogo de produtos do mercado
 -- ------------------------------------------------
 CREATE TABLE IF NOT EXISTS "Produto" (
-  id              BIGSERIAL     PRIMARY KEY,
+  id              BIGINT        NOT NULL,
+  gerente_id      BIGINT        NOT NULL,
   nome            TEXT          NOT NULL,
   marca           TEXT,
   codigo_barras   TEXT,
@@ -40,7 +52,8 @@ CREATE TABLE IF NOT EXISTS "Produto" (
   estoque         INTEGER       NOT NULL DEFAULT 0 CHECK (estoque >= 0),
   estoque_minimo  INTEGER       NOT NULL DEFAULT 0 CHECK (estoque_minimo >= 0),
   created_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-  updated_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+  updated_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id, gerente_id)
 );
 
 COMMENT ON TABLE  "Produto"                  IS 'Catálogo de produtos do mercado';
@@ -67,13 +80,15 @@ CREATE OR REPLACE TRIGGER trg_produto_updated_at
 -- Cabeçalho de cada transação de venda
 -- ------------------------------------------------
 CREATE TABLE IF NOT EXISTS "Venda" (
-  id          BIGSERIAL     PRIMARY KEY,
+  id          BIGINT        NOT NULL,
+  gerente_id  BIGINT        NOT NULL,
   data_venda  TIMESTAMPTZ   NOT NULL,
   valor_total NUMERIC(10,2) NOT NULL CHECK (valor_total >= 0),
   valor_cmv   NUMERIC(10,2) NOT NULL CHECK (valor_cmv >= 0),
   valor_opex  NUMERIC(10,2) NOT NULL CHECK (valor_opex >= 0),
   valor_lucro NUMERIC(10,2) NOT NULL,
-  created_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+  created_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id, gerente_id)
 );
 
 COMMENT ON TABLE  "Venda"            IS 'Cabeçalho de cada venda registrada';
@@ -87,14 +102,16 @@ COMMENT ON COLUMN "Venda".valor_lucro IS 'Lucro líquido após CMV e OpEx';
 -- Itens individuais de cada venda
 -- ------------------------------------------------
 CREATE TABLE IF NOT EXISTS "ItensVenda" (
-  id                    BIGSERIAL     PRIMARY KEY,
-  venda_id              BIGINT        NOT NULL
-                          REFERENCES "Venda"(id) ON DELETE CASCADE,
-  produto_id            BIGINT        NOT NULL
-                          REFERENCES "Produto"(id) ON DELETE RESTRICT,
+  id                    BIGINT        NOT NULL,
+  gerente_id            BIGINT        NOT NULL,
+  venda_id              BIGINT        NOT NULL,
+  produto_id            BIGINT        NOT NULL,
   quantidade            INTEGER       NOT NULL CHECK (quantidade > 0),
   preco_unitario        NUMERIC(10,2) NOT NULL CHECK (preco_unitario >= 0),
-  preco_custo_unitario  NUMERIC(10,2) NOT NULL CHECK (preco_custo_unitario >= 0)
+  preco_custo_unitario  NUMERIC(10,2) NOT NULL CHECK (preco_custo_unitario >= 0),
+  PRIMARY KEY (id, gerente_id),
+  FOREIGN KEY (venda_id, gerente_id) REFERENCES "Venda"(id, gerente_id) ON DELETE CASCADE,
+  FOREIGN KEY (produto_id, gerente_id) REFERENCES "Produto"(id, gerente_id) ON DELETE RESTRICT
 );
 
 COMMENT ON TABLE  "ItensVenda"                       IS 'Itens individuais de cada venda';
@@ -106,11 +123,13 @@ COMMENT ON COLUMN "ItensVenda".preco_custo_unitario  IS 'Preço de custo no mome
 -- Percentuais globais de split financeiro
 -- ------------------------------------------------
 CREATE TABLE IF NOT EXISTS "Configuracoes" (
-  id               BIGSERIAL     PRIMARY KEY,
+  id               BIGINT        NOT NULL,
+  gerente_id       BIGINT        NOT NULL,
   percentual_cmv   NUMERIC(5,2)  NOT NULL CHECK (percentual_cmv >= 0 AND percentual_cmv <= 100),
   percentual_opex  NUMERIC(5,2)  NOT NULL CHECK (percentual_opex >= 0 AND percentual_opex <= 100),
   percentual_lucro NUMERIC(5,2)  NOT NULL CHECK (percentual_lucro >= 0 AND percentual_lucro <= 100),
   updated_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id, gerente_id),
   CONSTRAINT chk_split_total CHECK (
     percentual_cmv + percentual_opex + percentual_lucro = 100
   )
@@ -182,10 +201,10 @@ CREATE POLICY "allow_all_service_role" ON "Configuracoes"
 -- ------------------------------------------------
 -- Dados iniciais (seed equivalente ao SQLite)
 -- ------------------------------------------------
-INSERT INTO "Usuario" (nome, email, senha)
-VALUES ('Administrador', 'admin', '123456')
+INSERT INTO "Usuario" (nome, email, senha, cargo, gerente_id)
+VALUES ('Administrador', 'admin', '8d969eef6ecad3c29a3a629280e686cf0c3f5d5a86aff3ca12020c923adc6c92', 'gerente', 1)
 ON CONFLICT (email) DO NOTHING;
 
-INSERT INTO "Configuracoes" (percentual_cmv, percentual_opex, percentual_lucro)
-SELECT 60.00, 20.00, 20.00
+INSERT INTO "Configuracoes" (id, percentual_cmv, percentual_opex, percentual_lucro, gerente_id)
+SELECT 1, 60.00, 20.00, 20.00, 1
 WHERE NOT EXISTS (SELECT 1 FROM "Configuracoes" LIMIT 1);

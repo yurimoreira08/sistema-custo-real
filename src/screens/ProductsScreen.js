@@ -24,24 +24,30 @@ import BarcodeScannerModal from '../components/BarcodeScannerModal';
 import { suggestPrice } from '../utils/pricing';
 import { feedbackFound, feedbackNotFound } from '../utils/scanFeedback';
 import SyncBadge from '../components/SyncBadge';
+import ConfirmationModal from '../components/ConfirmationModal';
 
 const CATEGORIAS = ['Laticínios', 'Mercearia', 'Bebidas', 'Higiene', 'Limpeza', 'Outros'];
-
-export default function ProductsScreen() {
+export default function ProductsScreen() {
   const { products, logout, refreshData, settings, user } = useApp();
   
-  // Filtros
   const [search, setSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('Todas as categorias');
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
 
-  // Modal
   const [modalVisible, setModalVisible] = useState(false);
   const [showFormCategoryDropdown, setShowFormCategoryDropdown] = useState(false);
   const [scannerVisible, setScannerVisible] = useState(false);
   
-  // Estado do formulário
   const [productId, setProductId] = useState(null);
+  const [deleteModalVisible, setDeleteModalVisible] = useState(false);
+  const [productToDelete, setProductToDelete] = useState(null);
+
+  const [alertVisible, setAlertVisible] = useState(false);
+  const [alertConfig, setAlertConfig] = useState({ title: '', message: '', type: 'info' });
+  const showCustomAlert = (title, message, type = 'info') => {
+    setAlertConfig({ title, message, type });
+    setAlertVisible(true);
+  };
   const [codigo, setCodigo] = useState('');
   const [categoria, setCategoria] = useState('');
   const [nome, setNome] = useState('');
@@ -52,12 +58,10 @@ export default function ProductsScreen() {
   const [estoqueMinimo, setEstoqueMinimo] = useState('');
   const [isFetchingApi, setIsFetchingApi] = useState(false);
 
-  // Métricas para os 3 cards do topo (calculadas de forma reativa a partir do SQLite products)
   const totalProdutos = products.length;
   const estoqueBaixo = products.filter(p => p.estoque <= p.estoque_minimo).length;
   const estoqueNormal = totalProdutos - estoqueBaixo;
 
-  // Sugestão de preço de venda a partir do custo digitado (usa o split configurado)
   const priceSuggestion = suggestPrice((precoCusto || '').replace(',', '.'), settings);
   const precoVendaNum = parseFloat((precoVenda || '').replace(',', '.'));
   const belowTarget =
@@ -66,7 +70,6 @@ export default function ProductsScreen() {
     precoVendaNum > 0 &&
     precoVendaNum < priceSuggestion.sugerido - 0.005;
 
-  // Filtragem
   const filteredProducts = products.filter(p => {
     const matchesSearch = p.nome.toLowerCase().includes(search.toLowerCase()) || 
                           (p.marca && p.marca.toLowerCase().includes(search.toLowerCase())) ||
@@ -110,7 +113,7 @@ export default function ProductsScreen() {
 
   const handleSave = async () => {
     if (!nome.trim() || categoria === 'Selecione...' || !precoCusto.trim() || !precoVenda.trim() || !estoque.trim()) {
-      Alert.alert('Erro', 'Por favor, preencha os campos obrigatórios (*): Categoria, Nome, Preço de Custo, Preço de Venda e Estoque.');
+      showCustomAlert('Erro', 'Por favor, preencha os campos obrigatórios (*): Categoria, Nome, Preço de Custo, Preço de Venda e Estoque.', 'danger');
       return;
     }
 
@@ -120,19 +123,19 @@ export default function ProductsScreen() {
     const qtyMin = estoqueMinimo ? parseInt(estoqueMinimo, 10) : 0;
 
     if (isNaN(custo) || custo <= 0) {
-      Alert.alert('Erro', 'Preço de Custo deve ser um número maior que zero.');
+      showCustomAlert('Erro', 'Preço de Custo deve ser um número maior que zero.', 'danger');
       return;
     }
     if (isNaN(venda) || venda <= 0) {
-      Alert.alert('Erro', 'Preço de Venda deve ser um número maior que zero.');
+      showCustomAlert('Erro', 'Preço de Venda deve ser um número maior que zero.', 'danger');
       return;
     }
     if (isNaN(qtyEstoque) || qtyEstoque < 0) {
-      Alert.alert('Erro', 'Estoque deve ser um número inteiro igual ou maior que zero.');
+      showCustomAlert('Erro', 'Estoque deve ser um número inteiro igual ou maior que zero.', 'danger');
       return;
     }
     if (isNaN(qtyMin) || qtyMin < 0) {
-      Alert.alert('Erro', 'Estoque Mínimo deve ser um número inteiro igual ou maior que zero.');
+      showCustomAlert('Erro', 'Estoque Mínimo deve ser um número inteiro igual ou maior que zero.', 'danger');
       return;
     }
 
@@ -149,37 +152,18 @@ export default function ProductsScreen() {
         estoque_minimo: qtyMin
       }, user.gerente_id);
 
-      Alert.alert('Sucesso', productId ? 'Produto atualizado com sucesso!' : 'Produto cadastrado com sucesso!');
+      showCustomAlert('Sucesso', productId ? 'Produto atualizado com sucesso!' : 'Produto cadastrado com sucesso!', 'success');
       setModalVisible(false);
       await refreshData();
     } catch (error) {
-      Alert.alert('Erro', 'Não foi possível salvar o produto.');
+      showCustomAlert('Erro', 'Não foi possível salvar o produto.', 'danger');
       console.error(error);
     }
   };
 
-  const handleDelete = (id, productName) => {
-    Alert.alert(
-      'Excluir Produto',
-      `Tem certeza de que deseja excluir o produto "${productName}"?`,
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        { 
-          text: 'Excluir', 
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await deleteProduct(id, user.gerente_id);
-              await refreshData();
-              Alert.alert('Sucesso', 'Produto excluído com sucesso.');
-            } catch (error) {
-              Alert.alert('Erro', 'Não foi possível excluir o produto. Ele pode estar associado a vendas.');
-              console.error(error);
-            }
-          }
-        }
-      ]
-    );
+  const handleDelete = (id, nome) => {
+    setProductToDelete({ id, nome });
+    setDeleteModalVisible(true);
   };
 
   const selectCategoryFilter = (cat) => {
@@ -192,9 +176,6 @@ export default function ProductsScreen() {
     setShowFormCategoryDropdown(false);
   };
 
-  // Gera um código PLU sequencial simples (ex.: 101, 102...) para produtos sem código
-  // de fábrica (frutas, legumes, padaria). Considera apenas códigos numéricos curtos
-  // (até 4 dígitos) para não colidir com EAN-13, e nunca inicia abaixo de 101.
   const generateAutoCode = () => {
     const shortNumericCodes = products
       .map(p => (p.codigo_barras || '').trim())
@@ -206,7 +187,6 @@ export default function ProductsScreen() {
     setCodigo(String(nextCode));
   };
 
-  // Função auxiliar de codificação Base64 para ambientes sem btoa global (React Native / Hermes)
   const encodeBase64 = (str) => {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
     let encoded = '';
@@ -228,10 +208,9 @@ export default function ProductsScreen() {
     return encoded;
   };
 
-  // Busca dados de produto na base do Open Food Facts
   const fetchProductFromApi = async (barcode) => {
     if (!barcode || barcode.trim().length < 8) {
-      Alert.alert('Código inválido', 'O código de barras para busca automática deve ter pelo menos 8 dígitos.');
+      showCustomAlert('Código inválido', 'O código de barras para busca automática deve ter pelo menos 8 dígitos.', 'danger');
       return;
     }
 
@@ -248,7 +227,6 @@ export default function ProductsScreen() {
         const fetchedNome = prod.product_name || prod.product_name_pt || prod.product_name_en || '';
         const fetchedMarca = prod.brands || '';
         
-        // Tentar categorizar
         let fetchedCategoria = 'Outros';
         const categoriesStr = ((prod.categories || '') + ' ' + (prod.categories_tags || []).join(' ')).toLowerCase();
         
@@ -275,13 +253,13 @@ export default function ProductsScreen() {
         productFound = true;
         
         const alertMsg = `Produto encontrado!\n\nNome: ${fetchedNome}\nMarca: ${fetchedMarca || 'Não informada'}\nCategoria sugerida: ${fetchedCategoria}`;
-        Alert.alert('Sucesso', alertMsg);
+        showCustomAlert('Sucesso', alertMsg, 'success');
       } else {
-        Alert.alert('Não encontrado', 'Produto não encontrado na base de dados pública. Digite os dados manualmente.');
+        showCustomAlert('Não encontrado', 'Produto não encontrado na base de dados pública. Digite os dados manualmente.', 'danger');
       }
     } catch (error) {
       console.error('Erro ao buscar produto na API pública:', error);
-      Alert.alert('Erro de Conexão', 'Não foi possível conectar à base pública para obter os dados.');
+      showCustomAlert('Erro de Conexão', 'Não foi possível conectar à base pública para obter os dados.', 'danger');
     }
 
     if (productFound) {
@@ -293,8 +271,6 @@ export default function ProductsScreen() {
     setIsFetchingApi(false);
   };
 
-
-  // Recebe o código lido pela câmera no cadastro e fecha o scanner (evita duplicação).
   const handleScanFormCode = (code) => {
     const trimmedCode = code.trim();
     setCodigo(trimmedCode);
@@ -309,10 +285,9 @@ export default function ProductsScreen() {
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <StatusBar style="light" />
       
-      {/* Header Bar */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          <Image source={require('../../assets/logo_lucrocerto.png')} style={{ width: 28, height: 28, borderRadius: 6, marginRight: 8 }} />
+          <Image source={require('../../assets/logo_lucrocerto.png')} style={styles.headerLogo} />
           <Text style={styles.headerTitle} numberOfLines={1}>LucroCerto</Text>
         </View>
         <View style={styles.headerRightGroup}>
@@ -324,32 +299,27 @@ export default function ProductsScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContainer} keyboardShouldPersistTaps="handled">
-        {/* Título e Botão Novo */}
         <View style={styles.titleRow}>
           <View>
             <Text style={styles.mainTitle}>Produtos</Text>
             <Text style={styles.subtitle}>Gerencie o estoque do mercado</Text>
           </View>
           <TouchableOpacity style={styles.topAddBtn} onPress={openAddModal}>
-            <Text style={styles.topAddBtnText}>+ Novo</Text>
+            <Text style={topAddBtnText => styles.topAddBtnText}>+ Novo</Text>
           </TouchableOpacity>
         </View>
 
-        {/* 3 Cards de Resumo */}
         <View style={styles.summaryRow}>
-          {/* Card 1: Total */}
           <View style={styles.summaryCard}>
             <Text style={styles.summaryEmoji}>📦</Text>
             <Text style={styles.summaryNumber}>{totalProdutos}</Text>
             <Text style={styles.summaryLabel}>Total de Produtos</Text>
           </View>
-          {/* Card 2: Estoque Normal */}
           <View style={styles.summaryCard}>
             <Text style={styles.summaryEmoji}>✅</Text>
             <Text style={styles.summaryNumber}>{estoqueNormal}</Text>
             <Text style={styles.summaryLabel}>Em Estoque Normal</Text>
           </View>
-          {/* Card 3: Estoque Baixo */}
           <View style={styles.summaryCard}>
             <Text style={styles.summaryEmoji}>⚠️</Text>
             <Text style={[styles.summaryNumber, estoqueBaixo > 0 && { color: '#E53E3E' }]}>{estoqueBaixo}</Text>
@@ -357,7 +327,6 @@ export default function ProductsScreen() {
           </View>
         </View>
 
-        {/* Barra de Busca */}
         <View style={styles.searchWrapper}>
           <Ionicons name="search" size={20} color="#A0AEC0" style={styles.searchIcon} />
           <TextInput
@@ -369,7 +338,6 @@ export default function ProductsScreen() {
           />
         </View>
 
-        {/* Filtro de Categoria (Dropdown) */}
         <View style={styles.dropdownContainer}>
           <TouchableOpacity 
             style={styles.dropdownSelector} 
@@ -400,7 +368,6 @@ export default function ProductsScreen() {
           )}
         </View>
 
-        {/* Listagem de Produtos */}
         {filteredProducts.length === 0 ? (
           <View style={styles.emptyContainer}>
             <Text style={styles.emptyText}>Nenhum produto encontrado.</Text>
@@ -411,7 +378,6 @@ export default function ProductsScreen() {
               const isLowStock = item.estoque <= item.estoque_minimo;
               return (
                 <View key={item.id.toString()} style={styles.productCard}>
-                  {/* Cabeçalho do Card */}
                   <View style={styles.cardHeaderRow}>
                     <Text style={styles.productName}>{item.nome}</Text>
                     <View style={styles.codeTag}>
@@ -419,12 +385,10 @@ export default function ProductsScreen() {
                     </View>
                   </View>
 
-                  {/* Categoria Badge */}
                   <View style={styles.categoryBadge}>
                     <Text style={styles.categoryBadgeText}>{item.categoria || 'Outros'}</Text>
                   </View>
 
-                  {/* Grid de Valores */}
                   <View style={styles.valuesGrid}>
                     <View style={styles.gridCol}>
                       <Text style={styles.gridLabel}>CUSTO</Text>
@@ -445,7 +409,6 @@ export default function ProductsScreen() {
                     </View>
                   </View>
 
-                  {/* Botões Editar / Excluir */}
                   <View style={styles.btnActionsRow}>
                     <TouchableOpacity style={styles.editCardBtn} onPress={() => openEditModal(item)}>
                       <Ionicons name="pencil" size={16} color="#2B6CB0" style={{ marginRight: 6 }} />
@@ -467,12 +430,10 @@ export default function ProductsScreen() {
         )}
       </ScrollView>
 
-      {/* Floating Action Button (FAB) */}
       <TouchableOpacity style={styles.fabBtn} onPress={openAddModal}>
         <Ionicons name="add" size={32} color="#FFF" />
       </TouchableOpacity>
 
-      {/* Modal Novo/Editar Produto */}
       <Modal
         animationType="slide"
         transparent={true}
@@ -484,7 +445,6 @@ export default function ProductsScreen() {
           style={styles.modalOverlay}
         >
           <View style={styles.modalContent}>
-            {/* Header Modal */}
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>
                 {productId ? '✏️ Editar Produto' : '＋ Novo Produto'}
@@ -494,9 +454,7 @@ export default function ProductsScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* Formulário Scroll */}
             <ScrollView contentContainerStyle={styles.modalForm}>
-              {/* Grid Linha 1: Código e Categoria */}
               <View style={styles.formRow}>
                 <View style={[styles.formCol, { marginRight: 10 }]}>
                   <View style={styles.formLabelRow}>
@@ -514,7 +472,6 @@ export default function ProductsScreen() {
                       onChangeText={setCodigo}
                       keyboardType="numeric"
                     />
-                    {/* Buscar código na API pública */}
                     {codigo.trim().length >= 8 && (
                       <TouchableOpacity 
                         style={[styles.codeSearchBtn, isFetchingApi && { backgroundColor: '#A0AEC0' }]} 
@@ -528,14 +485,12 @@ export default function ProductsScreen() {
                         )}
                       </TouchableOpacity>
                     )}
-                    {/* Ler código de barras pela câmera */}
                     <TouchableOpacity style={styles.codeScanBtn} onPress={() => setScannerVisible(true)}>
                       <Ionicons name="barcode-outline" size={22} color="#FFF" />
                     </TouchableOpacity>
                   </View>
                 </View>
 
-                {/* Dropdown de Categoria no Formulário */}
                 <View style={styles.formCol}>
                   <Text style={styles.formLabel}>Categoria *</Text>
                   <TouchableOpacity 
@@ -567,7 +522,6 @@ export default function ProductsScreen() {
                 </View>
               </View>
 
-              {/* Nome */}
               <View style={styles.formGroup}>
                 <Text style={styles.formLabel}>Nome do Produto *</Text>
                 <TextInput
@@ -579,7 +533,6 @@ export default function ProductsScreen() {
                 />
               </View>
 
-              {/* Marca */}
               <View style={styles.formGroup}>
                 <Text style={styles.formLabel}>Marca</Text>
                 <TextInput
@@ -591,7 +544,6 @@ export default function ProductsScreen() {
                 />
               </View>
 
-              {/* Grid Linha 3: Custo e Venda */}
               <View style={styles.formRow}>
                 <View style={[styles.formCol, { marginRight: 10 }]}>
                   <Text style={styles.formLabel}>Preço de Custo (R$) *</Text>
@@ -635,7 +587,6 @@ export default function ProductsScreen() {
                 <Text style={styles.priceWarning}>⚠️ Preço abaixo da margem alvo</Text>
               )}
 
-              {/* Grid Linha 4: Estoque e Mínimo */}
               <View style={styles.formRow}>
                 <View style={[styles.formCol, { marginRight: 10 }]}>
                   <Text style={styles.formLabel}>Qtd. em Estoque *</Text>
@@ -661,7 +612,6 @@ export default function ProductsScreen() {
                 </View>
               </View>
 
-              {/* Botões Salvar / Cancelar */}
               <View style={styles.modalActionsRow}>
                 <TouchableOpacity 
                   style={styles.cancelModalBtn} 
@@ -679,7 +629,6 @@ export default function ProductsScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* Modal de leitura de código de barras por câmera (cadastro) */}
       <Modal
         visible={scannerVisible}
         animationType="slide"
@@ -690,6 +639,44 @@ export default function ProductsScreen() {
           onClose={() => setScannerVisible(false)}
         />
       </Modal>
+
+      <ConfirmationModal
+        visible={deleteModalVisible}
+        title="Confirmar Exclusão"
+        message={productToDelete ? `Deseja realmente excluir o produto "${productToDelete.nome}"?` : ''}
+        confirmText="Excluir"
+        cancelText="Cancelar"
+        type="danger"
+        onConfirm={async () => {
+          if (productToDelete) {
+            try {
+              await deleteProduct(productToDelete.id, user.gerente_id);
+              setDeleteModalVisible(false);
+              setProductToDelete(null);
+              await refreshData();
+            } catch (error) {
+              setDeleteModalVisible(false);
+              setProductToDelete(null);
+              showCustomAlert('Erro', 'Não foi possível excluir o produto. Ele pode estar associado a vendas.', 'danger');
+              console.error(error);
+            }
+          }
+        }}
+        onCancel={() => {
+          setDeleteModalVisible(false);
+          setProductToDelete(null);
+        }}
+      />
+
+      <ConfirmationModal
+        visible={alertVisible}
+        title={alertConfig.title}
+        message={alertConfig.message}
+        confirmText="OK"
+        cancelText={null}
+        type={alertConfig.type}
+        onConfirm={() => setAlertVisible(false)}
+      />
     </SafeAreaView>
   );
 }
@@ -712,8 +699,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
+  headerLogo: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    marginRight: 10,
+    backgroundColor: '#FFFFFF',
+    padding: 3,
+  },
   headerTitle: {
-    fontSize: 20,
+    fontSize: 22,
     fontWeight: 'bold',
     color: '#FFF',
     flexShrink: 1,

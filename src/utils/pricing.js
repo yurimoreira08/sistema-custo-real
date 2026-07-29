@@ -1,7 +1,4 @@
-// Precificação a partir do custo usando o split configurado (CMV/OpEx/Lucro).
-// Regra: o preço de venda é dimensionado para que o custo represente exatamente
-// o percentual de CMV. Fórmula: venda = custo / (percentual_cmv / 100).
-
+// Sugere um preço de venda com base no custo e no percentual de CMV configurado
 export function suggestPrice(custo, settings) {
   const custoNum = Number(custo);
   const cmv = Number(settings?.percentual_cmv);

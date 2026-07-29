@@ -7,15 +7,18 @@ import {
   saveSettings, 
   fetchSalesHistory, 
   fetchDashboardStats,
-  fetchDashboardDetails
+  fetchDashboardDetails,
+  syncActiveUser
 } from '../database/db';
 import { checkNetworkAndSync, getSyncQueueCount } from '../database/syncService';
 import { isSupabaseConfigured } from '../database/supabaseClient';
 import * as Network from 'expo-network';
 import { AppState } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const AppContext = createContext();
 
+// Provedor de contexto global do aplicativo responsável pelo estado geral e sincronização
 export function AppProvider({ children }) {
   const [dbReady, setDbReady] = useState(false);
   const [syncStatus, setSyncStatus] = useState({
@@ -46,12 +49,20 @@ export function AppProvider({ children }) {
     ultimasVendas: []
   });
 
-  // Inicializar o banco de dados local
   useEffect(() => {
     async function setupDb() {
       await initializeDatabase();
+      
+      try {
+        const storedUser = await AsyncStorage.getItem('@user_session');
+        if (storedUser) {
+          setUser(JSON.parse(storedUser));
+        }
+      } catch (e) {
+        console.warn('[AppContext] Erro ao recuperar sessão do AsyncStorage:', e);
+      }
+
       setDbReady(true);
-      // Processar fila de sync pendente (operações offline anteriores)
       checkNetworkAndSync().catch(err =>
         console.warn('[AppContext] Erro no sync inicial:', err)
       );
@@ -59,13 +70,24 @@ export function AppProvider({ children }) {
     setupDb();
   }, []);
 
-  // Auto-sincronização: drena a fila ao reconectar, ao voltar ao foreground e
-  // periodicamente (poll de segurança), além de atualizar o status a cada 15s.
+  useEffect(() => {
+    const updateSession = async () => {
+      try {
+        if (user) {
+          await AsyncStorage.setItem('@user_session', JSON.stringify(user));
+        } else if (dbReady) {
+          await AsyncStorage.removeItem('@user_session');
+        }
+      } catch (e) {
+        console.warn('[AppContext] Erro ao persistir sessão:', e);
+      }
+    };
+    updateSession();
+  }, [user, dbReady]);
+
   useEffect(() => {
     if (!dbReady) return;
 
-    // Drena a fila se houver pendências e atualiza o status.
-    // checkNetworkAndSync reavalia a rede internamente (só sobe se online).
     const drainIfPending = async () => {
       try {
         const count = await getSyncQueueCount();
@@ -74,14 +96,10 @@ export function AppProvider({ children }) {
       await refreshSyncStatus();
     };
 
-    // Status inicial
     refreshSyncStatus();
 
-    // Poll de segurança: garante o dreno mesmo se algum evento de rede não disparar
     const intervalId = setInterval(drainIfPending, 15000);
 
-    // Reconexão de rede → drena. Blindado: se a API não existir em alguma
-    // plataforma, o poll acima ainda garante o dreno.
     let netSub;
     try {
       netSub = Network.addNetworkStateListener((state) => {
@@ -93,7 +111,6 @@ export function AppProvider({ children }) {
       });
     } catch (e) {}
 
-    // Volta ao foreground → drena
     let appStateSub;
     try {
       appStateSub = AppState.addEventListener('change', (next) => {
@@ -108,10 +125,11 @@ export function AppProvider({ children }) {
     };
   }, [dbReady]);
 
-  // Carregar dados gerais quando o banco estiver pronto ou quando o usuário logar
   useEffect(() => {
     if (dbReady && user) {
-      loadAllData();
+      syncActiveUser(user, setUser).then(() => {
+        loadAllData();
+      });
     }
   }, [dbReady, user]);
 
@@ -202,7 +220,6 @@ export function AppProvider({ children }) {
     setSyncStatus((prev) => ({ ...prev, isSyncing: false }));
   };
 
-  // Recarrega todos os dados do banco (útil após inserções ou atualizações)
   const refreshData = async () => {
     await loadProducts();
     await loadSalesHistory();
@@ -236,6 +253,7 @@ export function AppProvider({ children }) {
   );
 }
 
+// Hook personalizado para consumir o contexto do aplicativo
 export function useApp() {
   const context = useContext(AppContext);
   if (!context) {

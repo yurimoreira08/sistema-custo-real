@@ -1,16 +1,3 @@
-/**
- * supabaseClient.js
- *
- * Inicializa e exporta o cliente Supabase para uso no app.
- * Usa AsyncStorage para persistência de sessão entre reinicializações.
- *
- * IMPORTANTE: Preencha as credenciais no arquivo app.json:
- *   "extra": {
- *     "supabaseUrl": "https://SEU_PROJECT_ID.supabase.co",
- *     "supabaseAnonKey": "SUA_ANON_KEY_AQUI"
- *   }
- */
-
 import { createClient } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
@@ -25,6 +12,7 @@ if (!supabaseUrl || supabaseUrl.includes('SEU_PROJECT_ID')) {
   );
 }
 
+// Cliente global inicializado para comunicação com as tabelas do Supabase
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
     storage: AsyncStorage,
@@ -34,7 +22,7 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   },
 });
 
-/** Verifica se o cliente está configurado com credenciais reais */
+// Verifica se a URL e a chave anônima do Supabase estão configuradas corretamente no projeto
 export function isSupabaseConfigured() {
   return (
     !!supabaseUrl &&

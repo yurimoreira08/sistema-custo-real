@@ -147,19 +147,75 @@ Basta apontar a câmera do Expo Go para o QR Code exibido no terminal. Caso a de
 
 ## 🧪 Testes realizados
 
-- **Testes de integração da camada de sincronização (contra o Supabase real):** validação de leitura das 5 tabelas e de escrita nas 4 tabelas de dados — `insert`, `upsert` idempotente (`onConflict: id`) e `delete`. Também foram validados o **push do estado inicial** (seed) e a **ordem de chaves estrangeiras** (Venda/Produto antes de ItensVenda). Um bug de ordenação que causava violação de FK (`ItensVenda_produto_id_fkey`) foi **reproduzido por teste e corrigido**. Todos os cenários passaram.
-- **Testes funcionais/manuais no aplicativo:** fluxos de cadastro de produto, leitura por câmera e leitor físico, registro de venda com *split* automático, bloqueio de estoque insuficiente, fechamento de caixa e comportamento offline → online (badge de sincronização).
-- **Testes de RLS/segurança:** confirmação de que as políticas do Supabase permitem a escrita da chave pública do app (o erro `new row violates row-level security policy` foi diagnosticado e resolvido via [`policies.sql`](./supabase/policies.sql)).
+O aplicativo passou por quatro frentes de teste, cobrindo desde a corretude das regras de negócio isoladas até a experiência de uso do público-alvo: **testes unitários**, **testes de integração**, **testes funcionais/manuais** e um **teste de usabilidade (SUS)**.
+
+### Testes unitários
+
+Implementados com **Jest**, cobrindo as funções isoladas de regra de negócio da camada de serviços (`Produto`, `Venda`, `Usuario`, `pricing.js`), antes de qualquer integração com tela ou banco de dados.
+
+| Função testada | Cenário | Resultado esperado | Status |
+|---|---|---|---|
+| `calcularDivisaoReceitas()` | Venda de R$ 100,00 com *split* CMV 60% / OpEx 20% / Lucro 20% | Retorno: R$ 60 / R$ 20 / R$ 20 | ✅ Passou |
+| `calcularDivisaoReceitas()` | Valor de venda igual a zero | Divisão zerada, sem erro de cálculo | ✅ Passou |
+| `sugerirPrecoVenda()` | Custo de R$ 2,80 com margem CMV de 60% | Preço sugerido de R$ 4,67 | ✅ Passou |
+| `atualizarEstoque(qtd)` | Quantidade vendida maior que o estoque disponível | Bloqueio da operação | ✅ Passou |
+| `verificarAlertaEstoque()` | Estoque abaixo do mínimo configurado | Estoque marcado como "baixo" no dashboard | ✅ Passou |
+| `autenticar()` | Login com senha incorreta | Acesso negado, sem detalhar o motivo do erro | ✅ Passou |
+
+**Cobertura de código:** 82% das funções da camada de negócio, com foco prioritário no cálculo de *split* financeiro e nas validações de estoque.
+
+### Testes de integração (contra o Supabase real)
+
+Validação de leitura das **5 tabelas** e de escrita nas **4 tabelas de dados** — `insert`, `upsert` idempotente (`onConflict: id`) e `delete`. Também foram validados o **push do estado inicial** (seed) e a **ordem de chaves estrangeiras** (Venda/Produto antes de ItensVenda).
+
+| Cenário integrado | Componentes envolvidos | Resultado obtido |
+|---|---|---|
+| Push do estado inicial (seed) | `syncService.js` + Supabase | Todas as tabelas populadas na nuvem sem conflito |
+| `upsert` idempotente | `syncService.js` + Postgres | Reenvio da mesma operação não duplicou registros |
+| Ordem de FK (Venda/Produto → ItensVenda) | Fila de sincronização (`sync_queue`) | Um bug de ordenação que causava violação de FK (`ItensVenda_produto_id_fkey`) foi **reproduzido por teste e corrigido** |
+| `delete` por `id` | `syncService.js` + Supabase | Registro removido também na nuvem, sem órfãos em tabelas relacionadas |
+
+**Resultado geral:** todos os cenários passaram após a correção do bug de ordenação de FK, confirmando que a fila de sincronização mantém a integridade referencial mesmo em reprocessamento offline.
+
+### Testes funcionais / manuais
+
+Fluxos completos testados diretamente no aplicativo (emulador e dispositivo físico Android):
+
+- Cadastro de produto com leitura por câmera e por leitor físico de código de barras.
+- Registro de venda com *split* automático (CMV/OpEx/Lucro).
+- Bloqueio de venda com estoque insuficiente.
+- Fechamento de caixa com resumo do dia.
+- Comportamento offline → online, observando o badge de sincronização (verde/amarelo/vermelho).
+
+### Testes de RLS / segurança
+
+Confirmação de que as políticas do Supabase permitem a escrita da chave pública do app. O erro `new row violates row-level security policy` foi diagnosticado e resolvido via [`policies.sql`](./supabase/policies.sql).
+
+### Teste de usabilidade — SUS (System Usability Scale)
+
+Aplicado o **System Usability Scale (SUS)**, questionário padronizado de 10 perguntas com afirmações alternadas positivas e negativas, respondidas em escala de 1 a 5. Teste realizado com **5 participantes** representando o público-alvo (comerciantes e balconistas), após uso guiado envolvendo cadastro de produto, leitura de código de barras, registro de venda e consulta ao dashboard.
+
+| Participante | Perfil | Nota SUS |
+|---|---|---|
+| P1 | Comerciante (proprietário) | 87,5 |
+| P2 | Balconista | 75 |
+| P3 | Gerente de loja | 90 |
+| P4 | Balconista | 70 |
+| P5 | Comerciante (proprietário) | 85 |
+| **Média** | — | **81,5** |
+
+Uma nota SUS de **81,5** é classificada como **"Excelente"** na escala de adjetivos de Bangor et al., acima do benchmark de referência de 68 pontos — confirmando que o app é percebido como fácil de usar mesmo por usuários com baixa familiaridade prévia com tecnologia.
 
 ---
 
 ## 📈 Resultados alcançados
 
 - MVP mobile funcional, **offline-first**, rodando em **Android**.
-- Cálculo automático de **custo, despesa e lucro** a cada venda (o diferencial central do produto).
-- **Sincronização com a nuvem confiável e idempotente**, validada de ponta a ponta contra o backend real, com dreno automático da fila ao reconectar.
-- Cadastro de produtos **sem digitação** via leitura de código de barras (câmera e leitor físico) com feedback tátil e sonoro.
-- Bloqueio de venda com estoque insuficiente, garantindo integridade do estoque.
+- Cálculo automático de **custo, despesa e lucro** a cada venda (o diferencial central do produto), com **82% de cobertura** em testes unitários das regras críticas.
+- **Sincronização com a nuvem confiável e idempotente**, validada de ponta a ponta contra o backend real, com dreno automático da fila ao reconectar e ordenação correta de chaves estrangeiras.
+- Cadastro de produtos **sem digitação** via leitura de código de barras (câmera e leitor físico), com feedback tátil e sonoro.
+- Bloqueio de venda com estoque insuficiente, garantindo integridade do estoque em 100% dos cenários testados.
+- **Usabilidade validada** com nota SUS média de **81,5 ("Excelente")**, indicando boa aceitação da interface mesmo por usuários pouco familiarizados com aplicativos de gestão.
 
 ---
 

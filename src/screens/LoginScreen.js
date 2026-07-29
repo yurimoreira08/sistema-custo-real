@@ -17,6 +17,7 @@ import { useApp } from '../context/AppContext';
 import { Ionicons } from '@expo/vector-icons';
 import { registerUser } from '../database/db';
 
+// Tela de Login e Cadastro de comerciante/gerente
 export default function LoginScreen() {
   const { login } = useApp();
   const [username, setUsername] = useState('');
@@ -24,7 +25,6 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
-  // Estados de Cadastro
   const [isSignup, setIsSignup] = useState(false);
   const [signupNome, setSignupNome] = useState('');
   const [signupEmail, setSignupEmail] = useState('');
@@ -52,21 +52,6 @@ export default function LoginScreen() {
     }
   };
 
-  const handleTestLogin = async () => {
-    setLoading(true);
-    try {
-      const success = await login('admin', '123456');
-      if (!success) {
-        Alert.alert('Erro de Login', 'Usuário ou senha de teste inválidos.');
-      }
-    } catch (error) {
-      Alert.alert('Erro', 'Ocorreu um erro ao tentar acessar em modo teste.');
-      console.error(error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const handleSignupSubmit = async () => {
     if (!signupNome.trim() || !signupEmail.trim() || !signupSenha.trim() || !signupConfirmarSenha.trim()) {
       Alert.alert('Erro', 'Por favor, preencha todos os campos.');
@@ -84,7 +69,6 @@ export default function LoginScreen() {
       setUsername(signupEmail);
       setPassword(signupSenha);
       setIsSignup(false);
-      // Limpar campos
       setSignupNome('');
       setSignupEmail('');
       setSignupSenha('');
@@ -103,17 +87,17 @@ export default function LoginScreen() {
     >
       <StatusBar style="light" />
       <ScrollView contentContainerStyle={styles.scrollContainer} keyboardShouldPersistTaps="handled">
-        {/* Parte Superior: Fundo Azul com Logo */}
         <View style={styles.topSection}>
-          <Image 
-            source={require('../../assets/logo_lucrocerto.png')} 
-            style={styles.logoImage} 
-            resizeMode="contain"
-          />
+          <View style={styles.logoContainer}>
+            <Image 
+              source={require('../../assets/logo_lucrocerto.png')} 
+              style={styles.logoImage} 
+              resizeMode="contain"
+            />
+          </View>
           <Text style={styles.brandTitle}>LucroCerto</Text>
           <Text style={styles.brandSubtitle}>Gestão Inteligente de Estoque, Custos & Lucro</Text>
           
-          {/* Cápsulas de Funcionalidades */}
           <View style={styles.capsulesContainer}>
             <View style={styles.capsule}>
               <Text style={styles.capsuleText}>📦 Estoque</Text>
@@ -127,10 +111,8 @@ export default function LoginScreen() {
           </View>
         </View>
 
-        {/* Parte Inferior: Formulário de Login / Cadastro */}
         <View style={styles.bottomCard}>
           {!isSignup ? (
-            // Form de Login
             <View style={{ flex: 1 }}>
               <View style={styles.inputGroup}>
                 <Text style={styles.inputLabel}>Usuário ou E-mail</Text>
@@ -185,16 +167,6 @@ export default function LoginScreen() {
                 )}
               </TouchableOpacity>
 
-              {/* Botão de Modo Teste */}
-              <TouchableOpacity 
-                style={styles.testBtn} 
-                onPress={handleTestLogin}
-                disabled={loading}
-              >
-                <Text style={styles.testBtnText}>⚡ Acessar em Modo Teste (Admin)</Text>
-              </TouchableOpacity>
-
-              {/* Link de alternância para Cadastro */}
               <TouchableOpacity 
                 style={styles.toggleBtn}
                 onPress={() => setIsSignup(true)}
@@ -203,7 +175,6 @@ export default function LoginScreen() {
               </TouchableOpacity>
             </View>
           ) : (
-            // Form de Cadastro (Gerente)
             <View style={{ flex: 1 }}>
               <Text style={styles.formTitle}>Cadastrar Gerente / Comércio</Text>
               <Text style={styles.formSubtitle}>Crie a conta de administrador para gerenciar seu negócio.</Text>
@@ -300,7 +271,6 @@ export default function LoginScreen() {
             </View>
           )}
 
-          {/* Rodapé */}
           <View style={styles.footerRow}>
             <View style={styles.footerLeft}>
               <Text style={styles.footerText}>🔒 Acesso criptografado e seguro</Text>
@@ -327,11 +297,23 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingTop: Platform.OS === 'ios' ? 70 : 60,
     paddingBottom: 40,
+    borderBottomLeftRadius: 30,
+    borderBottomRightRadius: 30,
+  },
+  logoContainer: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 24,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.15,
+    shadowRadius: 15,
+    elevation: 8,
+    marginBottom: 16,
   },
   logoImage: {
-    width: 160,
-    height: 160,
-    marginBottom: 16,
+    width: 130,
+    height: 130,
   },
   brandTitle: {
     fontSize: 32,
@@ -428,22 +410,6 @@ const styles = StyleSheet.create({
   loginBtnText: {
     color: '#FFFFFF',
     fontSize: 16,
-    fontWeight: 'bold',
-    letterSpacing: 0.5,
-  },
-  testBtn: {
-    backgroundColor: '#EDF2F7',
-    borderWidth: 1.5,
-    borderColor: '#CBD5E0',
-    borderRadius: 8,
-    height: 50,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: 12,
-  },
-  testBtnText: {
-    color: '#2B6CB0',
-    fontSize: 15,
     fontWeight: 'bold',
     letterSpacing: 0.5,
   },

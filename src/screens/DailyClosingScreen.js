@@ -7,6 +7,8 @@ import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { fetchDailyClosing } from '../database/db';
 import SyncBadge from '../components/SyncBadge';
+import { useApp } from '../context/AppContext';
+import { useFocusEffect } from '@react-navigation/native';
 
 function formatCurrency(val) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0);
@@ -24,22 +26,28 @@ function formatDayLabel(date) {
 }
 
 export default function DailyClosingScreen() {
+  const { user } = useApp();
   const [date, setDate] = useState(new Date());
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
+    if (!user) return;
     setLoading(true);
     try {
-      const result = await fetchDailyClosing(date);
+      const result = await fetchDailyClosing(date, user.gerente_id);
       setData(result);
     } catch (e) {
       setData(null);
     }
     setLoading(false);
-  }, [date]);
+  }, [date, user]);
 
-  useEffect(() => { load(); }, [load]);
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load])
+  );
 
   const isToday = isSameDay(date, new Date());
   const goPrev = () => { const d = new Date(date); d.setDate(d.getDate() - 1); setDate(d); };

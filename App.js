@@ -6,7 +6,7 @@ import { AppProvider, useApp } from './src/context/AppContext';
 import AppNavigator from './src/navigation/AppNavigator';
 import { StatusBar } from 'expo-status-bar';
 
-// Componente intermediário para aguardar a inicialização do banco SQLite
+// Componente para exibir tela de carregamento até que o banco de dados esteja pronto
 function MainContent() {
   const { dbReady } = useApp();
 
@@ -29,6 +29,7 @@ function MainContent() {
   return <AppNavigator />;
 }
 
+// Ponto de entrada do aplicativo React Native
 export default function App() {
   return (
     <SafeAreaProvider>
@@ -44,7 +45,7 @@ export default function App() {
 const styles = StyleSheet.create({
   loadingContainer: {
     flex: 1,
-    backgroundColor: '#0F172A', // Slate 900
+    backgroundColor: '#0F172A',
     justifyContent: 'center',
     alignItems: 'center',
   },

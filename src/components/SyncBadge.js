@@ -2,23 +2,19 @@ import React from 'react';
 import { View, TouchableOpacity, Text, ActivityIndicator, StyleSheet } from 'react-native';
 import { useApp } from '../context/AppContext';
 
-// Badge de sincronização compacto para o header. Escondido se o Supabase não
-// estiver configurado. Toque força a sincronização.
-//   verde  = tudo sincronizado
-//   amarelo + nº = operações pendentes
-//   vermelho = offline
+// Badge visual que indica o status da conexão e de sincronização do aplicativo com o servidor
 export default function SyncBadge() {
   const { syncStatus, forceSync } = useApp();
   const { pendingCount, isOnline, isSyncing, configured } = syncStatus;
 
   if (!configured) return null;
 
-  let color = '#48BB78'; // verde
+  let color = '#48BB78';
   let label = '';
   if (!isOnline) {
-    color = '#F56565'; // vermelho
+    color = '#F56565';
   } else if (pendingCount > 0) {
-    color = '#ECC94B'; // amarelo
+    color = '#ECC94B';
     label = String(pendingCount);
   }
 

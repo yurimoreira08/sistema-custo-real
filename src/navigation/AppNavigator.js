@@ -4,7 +4,6 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { useApp } from '../context/AppContext';
 
-// Telas do Aplicativo
 import LoginScreen from '../screens/LoginScreen';
 import DashboardScreen from '../screens/DashboardScreen';
 import ProductsScreen from '../screens/ProductsScreen';
@@ -15,7 +14,7 @@ import DailyClosingScreen from '../screens/DailyClosingScreen';
 const Stack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
 
-// Bottom Tab Navigator para o fluxo logado do LucroCerto
+// Define a estrutura de abas inferiores do aplicativo baseado no cargo do usuário
 function AppTabs() {
   const { user } = useApp();
   const isGerente = user?.cargo === 'gerente';
@@ -41,11 +40,11 @@ function AppTabs() {
 
           return <Ionicons name={iconName} size={size} color={color} />;
         },
-        tabBarActiveTintColor: '#6366F1', // Indigo 500
-        tabBarInactiveTintColor: '#64748B', // Slate 400
+        tabBarActiveTintColor: '#6366F1',
+        tabBarInactiveTintColor: '#64748B',
         tabBarStyle: {
-          backgroundColor: '#1E293B', // Slate 800
-          borderTopColor: '#334155', // Slate 700
+          backgroundColor: '#1E293B',
+          borderTopColor: '#334155',
           height: 64,
           paddingBottom: 8,
           paddingTop: 8,
@@ -65,7 +64,7 @@ function AppTabs() {
   );
 }
 
-// Stack principal com tratamento dinâmico de Login
+// Navegador principal que controla o fluxo entre a tela de autenticação e as abas principais
 export default function AppNavigator() {
   const { user } = useApp();
 

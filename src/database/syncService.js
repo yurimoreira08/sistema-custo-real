@@ -1,30 +1,8 @@
-/**
- * syncService.js
- *
- * Serviço de sincronização offline-first: SQLite → Supabase.
- *
- * ESTRATÉGIA:
- *  1. Toda operação de escrita no SQLite também tenta enviar ao Supabase.
- *  2. Se não há rede ou o Supabase falhar, a operação é salva na `sync_queue`
- *     (tabela local SQLite).
- *  3. `processSyncQueue()` re-tenta as operações pendentes sempre que
- *     o app volta a ter rede.
- *
- * OPERAÇÕES SUPORTADAS:
- *  - 'upsert' → INSERT ... ON CONFLICT DO UPDATE (idempotente)
- *  - 'delete' → DELETE WHERE id = ?
- */
-
 import * as Network from 'expo-network';
 import { supabase, isSupabaseConfigured } from './supabaseClient';
 import { getDb } from './dbInstance';
 
-// ─── Fila de Sincronização (SQLite local) ────────────────────────────────────
-
-/**
- * Cria a tabela sync_queue no SQLite caso ainda não exista.
- * Deve ser chamada durante a inicialização do banco.
- */
+// Inicializa a tabela sync_queue no SQLite local
 export async function initSyncQueue() {
   const db = await getDb();
   await db.execAsync(`
@@ -39,13 +17,7 @@ export async function initSyncQueue() {
   `);
 }
 
-/**
- * Adiciona uma operação à fila de sincronização.
- *
- * @param {string} tableName   - Nome da tabela no Supabase
- * @param {'upsert'|'delete'} operation
- * @param {object} payload     - Dados a sincronizar (objeto JS)
- */
+// Insere uma nova tarefa de sincronização pendente na fila SQLite
 export async function enqueueSyncOperation(tableName, operation, payload) {
   try {
     const db = await getDb();
@@ -59,10 +31,7 @@ export async function enqueueSyncOperation(tableName, operation, payload) {
   }
 }
 
-/**
- * Conta operações pendentes na fila de sincronização.
- * Retorna 0 se a tabela ainda não existir (best-effort).
- */
+// Retorna a quantidade de operações pendentes na fila de sincronização
 export async function getSyncQueueCount() {
   try {
     const db = await getDb();
@@ -73,32 +42,30 @@ export async function getSyncQueueCount() {
   }
 }
 
-// ─── Sincronização com Supabase ───────────────────────────────────────────────
-
-/**
- * Sincroniza uma única operação diretamente com o Supabase.
- *
- * @param {string} tableName
- * @param {'upsert'|'delete'} operation
- * @param {object} payload
- * @returns {Promise<boolean>} true se bem-sucedido
- */
+// Envia uma única operação de upsert ou delete para a tabela correspondente no Supabase
 export async function syncToSupabase(tableName, operation, payload) {
   if (!isSupabaseConfigured()) return false;
 
   try {
     if (operation === 'upsert') {
+      let conflictTarget = 'id,gerente_id';
+      if (tableName === 'Usuario') {
+        conflictTarget = 'email';
+      }
+
       const { error } = await supabase
         .from(tableName)
-        .upsert(payload, { onConflict: 'id' });
+        .upsert(payload, { onConflict: conflictTarget });
 
       if (error) throw error;
     } else if (operation === 'delete') {
-      const { error } = await supabase
-        .from(tableName)
-        .delete()
-        .eq('id', payload.id);
+      let query = supabase.from(tableName).delete().eq('id', payload.id);
+      
+      if (payload.gerente_id && tableName !== 'Usuario') {
+        query = query.eq('gerente_id', payload.gerente_id);
+      }
 
+      const { error } = await query;
       if (error) throw error;
     }
 
@@ -109,33 +76,22 @@ export async function syncToSupabase(tableName, operation, payload) {
   }
 }
 
-// ─── Processamento da Fila ────────────────────────────────────────────────────
-
 const MAX_RETRIES = 5;
-
-// Evita que múltiplos gatilhos (poll, reconexão, foreground, escrita) processem
-// a mesma fila em paralelo. upsert/delete já são idempotentes; a flag apenas
-// impede trabalho duplicado e logs confusos.
 let isProcessingQueue = false;
 
-/**
- * Processa todas as operações pendentes na sync_queue.
- * Operações bem-sucedidas são removidas; operações com muitas falhas
- * são descartadas com aviso.
- */
+// Drena a fila de sincronização executando as operações na nuvem uma por uma
 export async function processSyncQueue() {
   if (!isSupabaseConfigured()) {
     console.log('[SyncService] Supabase não configurado — sync ignorado.');
     return;
   }
 
-  if (isProcessingQueue) return; // já há um processamento em andamento
+  if (isProcessingQueue) return;
   isProcessingQueue = true;
 
   try {
     const db = await getDb();
 
-    // Buscar operações pendentes ordenadas por criação (FIFO)
     const pending = await db.getAllAsync(
       `SELECT * FROM sync_queue ORDER BY id ASC LIMIT 50;`
     );
@@ -149,7 +105,6 @@ export async function processSyncQueue() {
       try {
         payload = JSON.parse(item.payload);
       } catch {
-        // Payload corrompido — remover da fila
         await db.runAsync('DELETE FROM sync_queue WHERE id = ?;', [item.id]);
         continue;
       }
@@ -162,7 +117,6 @@ export async function processSyncQueue() {
       } else {
         const newRetries = item.retries + 1;
         if (newRetries >= MAX_RETRIES) {
-          // Desistir após MAX_RETRIES tentativas
           await db.runAsync('DELETE FROM sync_queue WHERE id = ?;', [item.id]);
           console.warn(`[SyncService] ✗ Operação id=${item.id} descartada após ${MAX_RETRIES} tentativas.`);
         } else {
@@ -178,12 +132,7 @@ export async function processSyncQueue() {
   }
 }
 
-// ─── Ponto de Entrada Principal ───────────────────────────────────────────────
-
-/**
- * Verifica conectividade e dispara processamento da fila.
- * Chame este método no startup do app e após operações de escrita.
- */
+// Verifica conectividade de rede e dispara o dreno de sincronização pendente
 export async function checkNetworkAndSync() {
   try {
     const networkState = await Network.getNetworkStateAsync();
@@ -197,13 +146,7 @@ export async function checkNetworkAndSync() {
   }
 }
 
-/**
- * Tenta sincronizar imediatamente. Se falhar, enfileira para retry.
- *
- * @param {string} tableName
- * @param {'upsert'|'delete'} operation
- * @param {object} payload
- */
+// Tenta enviar a operação diretamente para o Supabase ou a enfileira em caso de falha/offline
 export async function syncOrEnqueue(tableName, operation, payload) {
   if (!isSupabaseConfigured()) return;
 
@@ -214,11 +157,9 @@ export async function syncOrEnqueue(tableName, operation, payload) {
     if (isOnline) {
       const success = await syncToSupabase(tableName, operation, payload);
       if (!success) {
-        // Falha no Supabase mesmo com rede — enfileirar para retry
         await enqueueSyncOperation(tableName, operation, payload);
       }
     } else {
-      // Offline — apenas enfileirar
       await enqueueSyncOperation(tableName, operation, payload);
     }
   } catch (err) {

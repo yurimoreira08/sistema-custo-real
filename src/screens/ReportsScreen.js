@@ -1,4 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
+import ConfirmationModal from '../components/ConfirmationModal';
 import { 
   StyleSheet, 
   Text, 
@@ -22,7 +24,7 @@ import SyncBadge from '../components/SyncBadge';
 
 export default function ReportsScreen() {
   const { user, logout, settings, updateSettings, refreshData } = useApp();
-  const [selectedPeriod, setSelectedPeriod] = useState(7); // 7, 30, 90, 180, 365
+  const [selectedPeriod, setSelectedPeriod] = useState(7);
   const [reportData, setReportData] = useState({
     receitaTotal: 0,
     custoTotal: 0,
@@ -33,27 +35,28 @@ export default function ReportsScreen() {
   });
   const [loading, setLoading] = useState(false);
 
-  // Estados para o Modal de Configuração do Split
   const [settingsModalVisible, setSettingsModalVisible] = useState(false);
   const [cmvPercent, setCmvPercent] = useState('');
   const [opexPercent, setOpexPercent] = useState('');
   const [lucroPercent, setLucroPercent] = useState('');
 
-  // Estados para Gerenciamento de Equipe
   const [usersList, setUsersList] = useState([]);
   const [teamModalVisible, setTeamModalVisible] = useState(false);
+  const [deleteModalVisible, setDeleteModalVisible] = useState(false);
+  const [memberToDelete, setMemberToDelete] = useState(null);
   const [newNome, setNewNome] = useState('');
   const [newEmail, setNewEmail] = useState('');
   const [newSenha, setNewSenha] = useState('');
-  const [newCargo, setNewCargo] = useState('balconista'); // gerente ou balconista
+  const [newCargo, setNewCargo] = useState('balconista');
   const [showNewPassword, setShowNewPassword] = useState(false);
 
-  // Carregar dados toda vez que o período mudar ou quando o contexto atualizar
-  useEffect(() => {
-    loadReportDetails();
-  }, [selectedPeriod]);
+  useFocusEffect(
+    useCallback(() => {
+      loadReportDetails();
+      loadTeamList();
+    }, [selectedPeriod, user])
+  );
 
-  // Sincronizar inputs de configuração com as settings atuais
   useEffect(() => {
     if (settings) {
       setCmvPercent(settings.percentual_cmv.toString());
@@ -62,7 +65,6 @@ export default function ReportsScreen() {
     }
   }, [settings, settingsModalVisible]);
 
-  // Carregar lista de equipe
   const loadTeamList = async () => {
     if (user?.gerente_id) {
       try {
@@ -73,10 +75,6 @@ export default function ReportsScreen() {
       }
     }
   };
-
-  useEffect(() => {
-    loadTeamList();
-  }, [user]);
 
   const loadReportDetails = async () => {
     setLoading(true);
@@ -101,7 +99,6 @@ export default function ReportsScreen() {
     }).format(val || 0);
   };
 
-  // Cálculo de Margem e Tendências
   const margemPercent = reportData.receitaTotal > 0 
     ? ((reportData.lucroTotal / reportData.receitaTotal) * 100).toFixed(1) 
     : '0.0';
@@ -110,7 +107,6 @@ export default function ReportsScreen() {
     ? ((reportData.custoTotal / reportData.receitaTotal) * 100).toFixed(1) 
     : '0.0';
 
-  // Tendência da Receita comparando com o período anterior
   const getReceitaTrend = () => {
     const curr = reportData.receitaTotal;
     const prev = reportData.prevReceita;
@@ -172,29 +168,10 @@ export default function ReportsScreen() {
   };
 
   const handleDeleteTeamMember = (id, nome) => {
-    Alert.alert(
-      'Remover Acesso',
-      `Deseja realmente excluir o funcionário "${nome}"?`,
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        { 
-          text: 'Excluir', 
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await deleteUser(id);
-              Alert.alert('Sucesso', 'Acesso removido com sucesso.');
-              await loadTeamList();
-            } catch (error) {
-              Alert.alert('Erro', error.message || 'Ocorreu um erro ao excluir.');
-            }
-          }
-        }
-      ]
-    );
+    setMemberToDelete({ id, nome });
+    setDeleteModalVisible(true);
   };
 
-  // Custom Chart Rendering Helpers
   const chartPoints = reportData.chartData || [];
   const maxVal = Math.max(...chartPoints.map(item => Math.max(item.receita, item.custo)), 100);
 
@@ -205,7 +182,7 @@ export default function ReportsScreen() {
       {/* Header Bar */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          <Image source={require('../../assets/logo_lucrocerto.png')} style={{ width: 28, height: 28, borderRadius: 6, marginRight: 8 }} />
+          <Image source={require('../../assets/logo_lucrocerto.png')} style={styles.headerLogo} />
           <Text style={styles.headerTitle}>LucroCerto</Text>
         </View>
         <View style={styles.headerRight}>
@@ -653,6 +630,33 @@ export default function ReportsScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      <ConfirmationModal
+        visible={deleteModalVisible}
+        title="Remover Acesso"
+        message={memberToDelete ? `Deseja realmente excluir o funcionário "${memberToDelete.nome}"?` : ''}
+        confirmText="Excluir"
+        cancelText="Cancelar"
+        type="danger"
+        onConfirm={async () => {
+          if (memberToDelete) {
+            try {
+              await deleteUser(memberToDelete.id);
+              setDeleteModalVisible(false);
+              setMemberToDelete(null);
+              await loadTeamList();
+            } catch (error) {
+              setDeleteModalVisible(false);
+              setMemberToDelete(null);
+              Alert.alert('Erro', error.message || 'Ocorreu um erro ao excluir.');
+            }
+          }
+        }}
+        onCancel={() => {
+          setDeleteModalVisible(false);
+          setMemberToDelete(null);
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -674,8 +678,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
+  headerLogo: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    marginRight: 10,
+    backgroundColor: '#FFFFFF',
+    padding: 3,
+  },
   headerTitle: {
-    fontSize: 20,
+    fontSize: 22,
     fontWeight: 'bold',
     color: '#FFF',
   },
