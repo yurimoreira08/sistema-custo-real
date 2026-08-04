@@ -56,7 +56,7 @@ A divisão (*split*) é **configurável** pelo dono do mercado e é usada tanto 
 
 - **🔐 Login local** — autenticação offline (acesso de teste: `admin` / `123456`).
 - **📊 Dashboard (Início)** — faturamento total, carteiras CMV/OpEx/Lucro, vendas do dia, transações, itens vendidos e alerta de estoque baixo.
-- **📦 Produtos** — cadastro/edição/exclusão com categoria, marca, preço de custo e venda, estoque e estoque mínimo. **Busca automática de dados pelo código de barras** (API OSCBR / RSC Sistemas, com *fallback* no Open Food Facts).
+- **📦 Produtos** — cadastro/edição/exclusão com categoria, marca, preço de custo e venda, estoque e estoque mínimo. **Busca automática de dados pelo código de barras** (API Open Food Facts).
 - **🛒 Nova Venda (PDV)** — carrinho, **leitor de código de barras** (câmera + leitor físico) com **bip e vibração**, *split* automático e **bloqueio de estoque insuficiente**.
 - **💰 Precificação inteligente** — sugere o preço de venda a partir do custo, respeitando a margem configurada.
 - **📈 Relatórios** — receita × custo × lucro por período, valor do estoque, gráfico de barras e comparação de tendência com o período anterior.
