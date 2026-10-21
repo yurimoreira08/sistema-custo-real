@@ -25,6 +25,10 @@ import { suggestPrice } from '../utils/pricing';
 import { feedbackFound, feedbackNotFound } from '../utils/scanFeedback';
 import SyncBadge from '../components/SyncBadge';
 import ConfirmationModal from '../components/ConfirmationModal';
+import StockReceivingModal from '../components/StockReceivingModal';
+import StockLossModal from '../components/StockLossModal';
+import KardexModal from '../components/KardexModal';
+import SuppliersModal from '../components/SuppliersModal';
 
 const CATEGORIAS = ['Laticínios', 'Mercearia', 'Bebidas', 'Higiene', 'Limpeza', 'Outros'];
 export default function ProductsScreen() {
@@ -37,6 +41,13 @@ const CATEGORIAS = ['Laticínios', 'Mercearia', 'Bebidas', 'Higiene', 'Limpeza',
   const [modalVisible, setModalVisible] = useState(false);
   const [showFormCategoryDropdown, setShowFormCategoryDropdown] = useState(false);
   const [scannerVisible, setScannerVisible] = useState(false);
+
+  // Modais de Zé Neto (S02, S03, S04)
+  const [receivingModalVisible, setReceivingModalVisible] = useState(false);
+  const [lossModalVisible, setLossModalVisible] = useState(false);
+  const [kardexModalVisible, setKardexModalVisible] = useState(false);
+  const [suppliersModalVisible, setSuppliersModalVisible] = useState(false);
+  const [selectedKardexProduct, setSelectedKardexProduct] = useState(null);
   
   const [productId, setProductId] = useState(null);
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
@@ -309,6 +320,56 @@ const CATEGORIAS = ['Laticínios', 'Mercearia', 'Bebidas', 'Higiene', 'Limpeza',
           </TouchableOpacity>
         </View>
 
+        {/* Barra de Ações Rápidas de Estoque Harmonizada */}
+        <View style={styles.quickActionsContainer}>
+          <TouchableOpacity 
+            style={styles.quickActionBtn}
+            onPress={() => setReceivingModalVisible(true)}
+            activeOpacity={0.7}
+          >
+            <View style={[styles.quickActionIconBg, { backgroundColor: '#DEF7EC' }]}>
+              <Ionicons name="archive-outline" size={17} color="#03543F" />
+            </View>
+            <Text style={styles.quickActionText}>Entrada (PMP)</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity 
+            style={styles.quickActionBtn}
+            onPress={() => setLossModalVisible(true)}
+            activeOpacity={0.7}
+          >
+            <View style={[styles.quickActionIconBg, { backgroundColor: '#FDE8E8' }]}>
+              <Ionicons name="alert-circle-outline" size={17} color="#9B1C1C" />
+            </View>
+            <Text style={styles.quickActionText}>Baixa Perda</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity 
+            style={styles.quickActionBtn}
+            onPress={() => {
+              setSelectedKardexProduct(null);
+              setKardexModalVisible(true);
+            }}
+            activeOpacity={0.7}
+          >
+            <View style={[styles.quickActionIconBg, { backgroundColor: '#EBF8FF' }]}>
+              <Ionicons name="list-outline" size={17} color="#2B6CB0" />
+            </View>
+            <Text style={styles.quickActionText}>Kardex Geral</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity 
+            style={styles.quickActionBtn}
+            onPress={() => setSuppliersModalVisible(true)}
+            activeOpacity={0.7}
+          >
+            <View style={[styles.quickActionIconBg, { backgroundColor: '#FEF3C7' }]}>
+              <Ionicons name="business-outline" size={17} color="#92400E" />
+            </View>
+            <Text style={styles.quickActionText}>Fornecedores</Text>
+          </TouchableOpacity>
+        </View>
+
         <View style={styles.summaryRow}>
           <View style={styles.summaryCard}>
             <Text style={styles.summaryEmoji}>📦</Text>
@@ -410,16 +471,29 @@ const CATEGORIAS = ['Laticínios', 'Mercearia', 'Bebidas', 'Higiene', 'Limpeza',
                   </View>
 
                   <View style={styles.btnActionsRow}>
-                    <TouchableOpacity style={styles.editCardBtn} onPress={() => openEditModal(item)}>
-                      <Ionicons name="pencil" size={16} color="#2B6CB0" style={{ marginRight: 6 }} />
+                    <TouchableOpacity 
+                      style={styles.kardexCardBtn} 
+                      onPress={() => {
+                        setSelectedKardexProduct(item);
+                        setKardexModalVisible(true);
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons name="list-outline" size={15} color="#4A5568" style={{ marginRight: 4 }} />
+                      <Text style={styles.kardexCardBtnText}>Kardex</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity style={styles.editCardBtn} onPress={() => openEditModal(item)} activeOpacity={0.7}>
+                      <Ionicons name="pencil" size={15} color="#2B6CB0" style={{ marginRight: 4 }} />
                       <Text style={styles.editCardBtnText}>Editar</Text>
                     </TouchableOpacity>
 
                     <TouchableOpacity 
                       style={styles.deleteCardBtn} 
                       onPress={() => handleDelete(item.id, item.nome)}
+                      activeOpacity={0.7}
                     >
-                      <Ionicons name="trash" size={16} color="#C53030" style={{ marginRight: 6 }} />
+                      <Ionicons name="trash" size={15} color="#C53030" style={{ marginRight: 4 }} />
                       <Text style={styles.deleteCardBtnText}>Excluir</Text>
                     </TouchableOpacity>
                   </View>
@@ -676,6 +750,58 @@ const CATEGORIAS = ['Laticínios', 'Mercearia', 'Bebidas', 'Higiene', 'Limpeza',
         cancelText={null}
         type={alertConfig.type}
         onConfirm={() => setAlertVisible(false)}
+      />
+
+      {/* Modal de Entrada de Mercadorias (PMP) */}
+      <StockReceivingModal
+        visible={receivingModalVisible}
+        gerenteId={user?.gerente_id}
+        usuarioId={user?.id}
+        products={products}
+        onSuccess={async (res) => {
+          await refreshData();
+          showCustomAlert(
+            'Entrada Concluída',
+            `NF ${res.numeroNota || 'S/N'} registrada com sucesso para ${res.fornecedorNome}!\nPreço Médio Ponderado (PMP) e estoques atualizados.`,
+            'info'
+          );
+        }}
+        onClose={() => setReceivingModalVisible(false)}
+      />
+
+      {/* Modal de Baixa de Perdas e Avarias */}
+      <StockLossModal
+        visible={lossModalVisible}
+        gerenteId={user?.gerente_id}
+        usuarioId={user?.id}
+        products={products}
+        onSuccess={async (res) => {
+          await refreshData();
+          showCustomAlert(
+            'Baixa de Perda Registrada',
+            `Baixa de ${res.quantidade} un do tipo ${res.tipoPerda.toUpperCase()} registrada!\nImpacto financeiro apurado: R$ ${res.impactoFinanceiro.toFixed(2)}.`,
+            'danger'
+          );
+        }}
+        onClose={() => setLossModalVisible(false)}
+      />
+
+      {/* Modal de Histórico Kardex */}
+      <KardexModal
+        visible={kardexModalVisible}
+        gerenteId={user?.gerente_id}
+        produto={selectedKardexProduct}
+        onClose={() => {
+          setKardexModalVisible(false);
+          setSelectedKardexProduct(null);
+        }}
+      />
+
+      {/* Modal de Gestão de Fornecedores */}
+      <SuppliersModal
+        visible={suppliersModalVisible}
+        gerenteId={user?.gerente_id}
+        onClose={() => setSuppliersModalVisible(false)}
       />
     </SafeAreaView>
   );
@@ -958,9 +1084,58 @@ const styles = StyleSheet.create({
   stockLowText: {
     color: '#C53030', // Vermelho se estoque crítico
   },
+  quickActionsContainer: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 16,
+  },
+  quickActionBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  quickActionIconBg: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 6,
+  },
+  quickActionText: {
+    fontSize: 11,
+    fontWeight: 'bold',
+    color: '#2D3748',
+    flexShrink: 1,
+  },
   btnActionsRow: {
     flexDirection: 'row',
-    gap: 12,
+    gap: 8,
+  },
+  kardexCardBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    backgroundColor: '#EDF2F7',
+    borderRadius: 8,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  kardexCardBtnText: {
+    color: '#4A5568',
+    fontSize: 13,
+    fontWeight: 'bold',
   },
   editCardBtn: {
     flex: 1,
@@ -973,7 +1148,7 @@ const styles = StyleSheet.create({
   },
   editCardBtnText: {
     color: '#2B6CB0', // Texto azul royal
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: 'bold',
   },
   deleteCardBtn: {
@@ -987,7 +1162,7 @@ const styles = StyleSheet.create({
   },
   deleteCardBtnText: {
     color: '#C53030', // Texto vermelho
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: 'bold',
   },
   fabBtn: {
@@ -1201,5 +1376,30 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     marginBottom: 12,
+  },
+  actionToolsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 14,
+    marginTop: -4,
+  },
+  toolBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 9,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.15,
+    shadowRadius: 2,
+  },
+  toolBtnText: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: '700',
   },
 });

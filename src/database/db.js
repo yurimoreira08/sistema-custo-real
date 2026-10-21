@@ -2,6 +2,50 @@ import { initSyncQueue, syncOrEnqueue } from './syncService';
 import { getDb } from './dbInstance';
 import { hashPassword } from '../utils/crypto';
 import { supabase, isSupabaseConfigured } from './supabaseClient';
+import { initClienteTable, saveCliente, fetchClientes, getClienteById, validateLimiteFiado, debitarFiado, estornarFiado } from '../services/clientService';
+import { 
+  initPaymentTables, 
+  seedFormasPagamento, 
+  fetchFormasPagamento, 
+  saveFormaPagamentoConfig, 
+  calcularTaxaPagamento, 
+  validarPagamentosMistos, 
+  registrarPagamentosVenda, 
+  estornarPagamentosVenda, 
+  fetchPagamentosVenda, 
+  apurarLucroReal 
+} from '../services/paymentService';
+import { 
+  initStockTables, 
+  saveFornecedor, 
+  fetchFornecedores, 
+  getFornecedorById, 
+  registrarMovimentacaoKardex, 
+  fetchKardex, 
+  calcularNovoPMP, 
+  registrarEntradaMercadorias, 
+  registrarPerdaEstoque, 
+  fetchRelatorioPerdas 
+} from '../services/stockService';
+import { 
+  initSaleTables, 
+  validarERecalcularCarrinho, 
+  finalizarVendaCompleta, 
+  cancelarVendaComAutorizacao, 
+  processarDevolucaoParcial 
+} from '../services/saleService';
+
+// Re-exportações de serviços para disponibilidade global
+export {
+  // Clientes e Fiado
+  saveCliente, fetchClientes, getClienteById, validateLimiteFiado, debitarFiado, estornarFiado,
+  // Pagamentos, Taxas e Lucro Real
+  fetchFormasPagamento, saveFormaPagamentoConfig, calcularTaxaPagamento, validarPagamentosMistos, registrarPagamentosVenda, estornarPagamentosVenda, fetchPagamentosVenda, apurarLucroReal,
+  // Estoque, Fornecedores, Kardex e PMP
+  saveFornecedor, fetchFornecedores, getFornecedorById, registrarMovimentacaoKardex, fetchKardex, calcularNovoPMP, registrarEntradaMercadorias, registrarPerdaEstoque, fetchRelatorioPerdas,
+  // Vendas, Carrinho, Cancelamento e Devolução
+  validarERecalcularCarrinho, finalizarVendaCompleta, cancelarVendaComAutorizacao, processarDevolucaoParcial
+};
 
 // Inicializa o esquema do SQLite e insere dados padrão e migrações caso o banco esteja vazio
 export async function initializeDatabase() {
@@ -32,7 +76,10 @@ export async function initializeDatabase() {
         preco_venda REAL NOT NULL,
         estoque INTEGER NOT NULL DEFAULT 0,
         estoque_minimo INTEGER NOT NULL DEFAULT 0,
-        gerente_id INTEGER DEFAULT 1
+        gerente_id INTEGER DEFAULT 1,
+        fornecedor_id INTEGER,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now'))
       );
     `);
 
@@ -88,12 +135,38 @@ export async function initializeDatabase() {
       await db.execAsync("ALTER TABLE Produto ADD COLUMN gerente_id INTEGER DEFAULT 1;");
     } catch (e) {}
     try {
+      await db.execAsync("ALTER TABLE Produto ADD COLUMN updated_at TEXT;");
+    } catch (e) {}
+    try {
+      await db.execAsync("ALTER TABLE Produto ADD COLUMN created_at TEXT;");
+    } catch (e) {}
+    try {
+      await db.execAsync("ALTER TABLE Produto ADD COLUMN fornecedor_id INTEGER;");
+    } catch (e) {}
+    try {
       await db.execAsync("ALTER TABLE Venda ADD COLUMN gerente_id INTEGER DEFAULT 1;");
+    } catch (e) {}
+    try {
+      await db.execAsync("ALTER TABLE Venda ADD COLUMN updated_at TEXT;");
     } catch (e) {}
     try {
       await db.execAsync("ALTER TABLE Configuracoes ADD COLUMN gerente_id INTEGER;");
     } catch (e) {}
+    try {
+      await db.execAsync("ALTER TABLE Configuracoes ADD COLUMN updated_at TEXT;");
+    } catch (e) {}
+    try {
+      // Remove triggers órfãos se existirem de versões antigas do SQLite
+      await db.execAsync("DROP TRIGGER IF EXISTS trg_produto_updated_at;");
+      await db.execAsync("DROP TRIGGER IF EXISTS trg_configuracoes_updated_at;");
+    } catch (e) {}
 
+    // Inicialização das tabelas de S01 a S04
+    await initClienteTable(db);
+    await initPaymentTables(db);
+    await seedFormasPagamento(1, db);
+    await initStockTables(db);
+    await initSaleTables(db);
     await initSyncQueue();
 
     let seeded = false;
@@ -111,6 +184,26 @@ export async function initializeDatabase() {
       );
     }
 
+    // Perfil mestre para testes: Gerente
+    const gerenteCheck = await db.getAllAsync("SELECT * FROM Usuario WHERE email = 'admin@lucrocerto.com' LIMIT 1;");
+    if (gerenteCheck.length === 0) {
+      await db.runAsync(
+        'INSERT INTO Usuario (nome, email, senha, cargo, gerente_id) VALUES (?, ?, ?, ?, ?);',
+        ['Gerente Teste', 'admin@lucrocerto.com', hashPassword('123456'), 'gerente', 1]
+      );
+      console.log('Banco de dados: Perfil de teste admin@lucrocerto.com criado.');
+    }
+
+    // Perfil para testes de permissão/caixa: Balconista
+    const balcaoCheck = await db.getAllAsync("SELECT * FROM Usuario WHERE email = 'balcao@lucrocerto.com' LIMIT 1;");
+    if (balcaoCheck.length === 0) {
+      await db.runAsync(
+        'INSERT INTO Usuario (nome, email, senha, cargo, gerente_id) VALUES (?, ?, ?, ?, ?);',
+        ['Balconista Caixa', 'balcao@lucrocerto.com', hashPassword('123456'), 'balconista', 1]
+      );
+      console.log('Banco de dados: Perfil de teste balcao@lucrocerto.com criado.');
+    }
+
     const allUsers = await db.getAllAsync('SELECT id, senha FROM Usuario;');
     for (const u of allUsers) {
       if (u.senha.length !== 64) {
@@ -118,6 +211,19 @@ export async function initializeDatabase() {
         await db.runAsync('UPDATE Usuario SET senha = ? WHERE id = ?;', [hashed, u.id]);
         console.log(`Banco de dados: Senha do usuário ID ${u.id} hashada com sucesso.`);
       }
+    }
+
+    const fornecedorCheck = await db.getAllAsync('SELECT * FROM Fornecedor LIMIT 1;');
+    if (fornecedorCheck.length === 0) {
+      await db.runAsync(
+        'INSERT INTO Fornecedor (gerente_id, nome, cnpj_cpf, telefone, email, cidade, ativo) VALUES (?, ?, ?, ?, ?, ?, ?);',
+        [1, 'Distribuidora Aliança Ltda', '12.345.678/0001-90', '(11) 98765-4321', 'vendas@alianca.com.br', 'São Paulo', 1]
+      );
+      await db.runAsync(
+        'INSERT INTO Fornecedor (gerente_id, nome, cnpj_cpf, telefone, email, cidade, ativo) VALUES (?, ?, ?, ?, ?, ?, ?);',
+        [1, 'Atacadão de Bebidas Central', '98.765.432/0001-10', '(11) 91234-5678', 'contato@atacadaocentral.com', 'Campinas', 1]
+      );
+      console.log('Banco de dados: Fornecedores padrão de teste inseridos.');
     }
 
     const configCheck = await db.getAllAsync('SELECT * FROM Configuracoes LIMIT 1;');
@@ -671,7 +777,7 @@ export async function registerSale(cartItems, splitPercentages, gerenteId) {
   const itemPayloads = [];
   const produtoPayloads = [];
 
-  await db.withTransactionAsync(async () => {
+  const runInsideTx = async () => {
     let valorTotal = 0;
     for (const item of cartItems) {
       valorTotal += item.preco_venda * item.quantidade;
@@ -684,8 +790,10 @@ export async function registerSale(cartItems, splitPercentages, gerenteId) {
 
     const now = new Date().toISOString();
     const saleResult = await db.runAsync(
-      'INSERT INTO Venda (data_venda, valor_total, valor_cmv, valor_opex, valor_lucro, gerente_id) VALUES (?, ?, ?, ?, ?, ?);',
-      [now, valorTotal, valorCmv, valorOpex, valorLucro, gerenteId]
+      `INSERT INTO Venda 
+       (data_venda, valor_bruto, desconto, valor_total, total_taxas, valor_liquido, valor_cmv, valor_opex, valor_lucro, gerente_id, canal_venda, status) 
+       VALUES (?, ?, 0.0, ?, 0.0, ?, ?, ?, ?, ?, 'balcao', 'concluida');`,
+      [now, valorTotal, valorTotal, valorTotal, valorCmv, valorOpex, valorLucro, gerenteId]
     );
     vendaId = saleResult.lastInsertRowId;
     vendaPayload = {
@@ -695,8 +803,17 @@ export async function registerSale(cartItems, splitPercentages, gerenteId) {
       valor_cmv: valorCmv,
       valor_opex: valorOpex,
       valor_lucro: valorLucro,
-      gerente_id: gerenteId
+      gerente_id: gerenteId,
+      status: 'concluida'
     };
+
+    // Registra pagamento padrão em dinheiro
+    await db.runAsync(
+      `INSERT INTO PagamentoVenda 
+       (gerente_id, venda_id, forma_pagamento, operadora, valor_bruto, taxa_percentual, taxa_fixa, valor_taxa, valor_liquido)
+       VALUES (?, ?, 'dinheiro', 'Padrao', ?, 0.0, 0.0, 0.0, ?);`,
+      [gerenteId, vendaId, valorTotal, valorTotal]
+    );
 
     for (const item of cartItems) {
       const productRow = await db.getAllAsync(
@@ -708,6 +825,7 @@ export async function registerSale(cartItems, splitPercentages, gerenteId) {
       }
       const prod = productRow[0];
 
+      const saldoAnterior = prod.estoque;
       const newStock = prod.estoque - item.quantidade;
 
       if (newStock < 0) {
@@ -717,8 +835,26 @@ export async function registerSale(cartItems, splitPercentages, gerenteId) {
       await db.runAsync('UPDATE Produto SET estoque = ? WHERE id = ? AND gerente_id = ?;', [newStock, item.id, gerenteId]);
 
       const itemResult = await db.runAsync(
-        'INSERT INTO ItensVenda (venda_id, produto_id, quantidade, preco_unitario, preco_custo_unitario) VALUES (?, ?, ?, ?, ?);',
-        [vendaId, item.id, item.quantidade, item.preco_venda, item.preco_custo]
+        'INSERT INTO ItensVenda (venda_id, produto_id, quantidade, preco_unitario, preco_custo_unitario, subtotal, gerente_id) VALUES (?, ?, ?, ?, ?, ?, ?);',
+        [vendaId, item.id, item.quantidade, item.preco_venda, item.preco_custo, item.preco_venda * item.quantidade, gerenteId]
+      );
+
+      // Movimentação no Kardex
+      await db.runAsync(
+        `INSERT INTO MovimentacaoEstoque 
+         (gerente_id, produto_id, tipo_movimentacao, quantidade, saldo_anterior, saldo_resultante, custo_unitario, valor_total, origem_tipo, origem_id, justificativa, data_movimentacao)
+         VALUES (?, ?, 'SAIDA_VENDA', ?, ?, ?, ?, ?, 'venda', ?, 'Venda PDV', ?);`,
+        [
+          gerenteId,
+          item.id,
+          -item.quantidade,
+          saldoAnterior,
+          newStock,
+          item.preco_custo,
+          item.quantidade * item.preco_custo,
+          vendaId,
+          now
+        ]
       );
 
       itemPayloads.push({
@@ -744,7 +880,20 @@ export async function registerSale(cartItems, splitPercentages, gerenteId) {
         gerente_id: gerenteId
       });
     }
-  });
+  };
+
+  if (typeof db.withTransactionAsync === 'function') {
+    await db.withTransactionAsync(runInsideTx);
+  } else {
+    await db.runAsync('BEGIN TRANSACTION;');
+    try {
+      await runInsideTx();
+      await db.runAsync('COMMIT;');
+    } catch (e) {
+      await db.runAsync('ROLLBACK;');
+      throw e;
+    }
+  }
 
   await syncOrEnqueue('Venda', 'upsert', vendaPayload);
   for (const payload of produtoPayloads) {
@@ -774,7 +923,7 @@ export async function fetchDashboardStats(gerenteId) {
       SUM(valor_opex) as total_opex,
       SUM(valor_lucro) as total_lucro
     FROM Venda
-    WHERE gerente_id = ?;
+    WHERE gerente_id = ? AND status != 'cancelada';
   `, [gerenteId]);
 
   const lowStockProducts = await db.getAllAsync(`
@@ -785,7 +934,7 @@ export async function fetchDashboardStats(gerenteId) {
 
   const productCountResult = await db.getAllAsync('SELECT COUNT(*) as total FROM Produto WHERE gerente_id = ?;', [gerenteId]);
 
-  const saleCountResult = await db.getAllAsync('SELECT COUNT(*) as total FROM Venda WHERE gerente_id = ?;', [gerenteId]);
+  const saleCountResult = await db.getAllAsync('SELECT COUNT(*) as total FROM Venda WHERE gerente_id = ? AND status != \'cancelada\';', [gerenteId]);
 
   const stats = totals[0] || {};
   
@@ -821,19 +970,19 @@ export async function fetchDashboardDetails(gerenteId) {
   const startOfDayISO = startOfDay.toISOString();
 
   const vendasHojeResult = await db.getAllAsync(
-    'SELECT SUM(valor_total) as total FROM Venda WHERE data_venda >= ? AND gerente_id = ?;',
+    'SELECT SUM(valor_total) as total FROM Venda WHERE data_venda >= ? AND gerente_id = ? AND status != \'cancelada\';',
     [startOfDayISO, gerenteId]
   );
   const vendasHoje = vendasHojeResult[0]?.total || 0;
 
   const transacoesHojeResult = await db.getAllAsync(
-    'SELECT COUNT(*) as count FROM Venda WHERE data_venda >= ? AND gerente_id = ?;',
+    'SELECT COUNT(*) as count FROM Venda WHERE data_venda >= ? AND gerente_id = ? AND status != \'cancelada\';',
     [startOfDayISO, gerenteId]
   );
   const transacoesHoje = transacoesHojeResult[0]?.count || 0;
 
   const itensVendidosHojeResult = await db.getAllAsync(
-    'SELECT SUM(iv.quantidade) as total_qty FROM ItensVenda iv JOIN Venda v ON iv.venda_id = v.id WHERE v.data_venda >= ? AND v.gerente_id = ?;',
+    'SELECT SUM(iv.quantidade) as total_qty FROM ItensVenda iv JOIN Venda v ON iv.venda_id = v.id WHERE v.data_venda >= ? AND v.gerente_id = ? AND v.status != \'cancelada\';',
     [startOfDayISO, gerenteId]
   );
   const itensVendidosHoje = itensVendidosHojeResult[0]?.total_qty || 0;
@@ -907,14 +1056,14 @@ export async function fetchDailyClosing(date, gerenteId) {
        COALESCE(SUM(valor_opex), 0)  AS opex,
        COALESCE(SUM(valor_lucro), 0) AS lucro
      FROM Venda
-     WHERE data_venda >= ? AND data_venda < ? AND gerente_id = ?;`,
+     WHERE data_venda >= ? AND data_venda < ? AND gerente_id = ? AND status != 'cancelada';`,
     [inicioISO, fimISO, gerenteId]
   );
 
   const itens = await db.getAllAsync(
     `SELECT COALESCE(SUM(iv.quantidade), 0) AS total_itens
        FROM ItensVenda iv JOIN Venda v ON iv.venda_id = v.id
-      WHERE v.data_venda >= ? AND v.data_venda < ? AND v.gerente_id = ?;`,
+      WHERE v.data_venda >= ? AND v.data_venda < ? AND v.gerente_id = ? AND v.status != 'cancelada';`,
     [inicioISO, fimISO, gerenteId]
   );
 
@@ -925,7 +1074,7 @@ export async function fetchDailyClosing(date, gerenteId) {
        FROM ItensVenda iv
        JOIN Venda v   ON iv.venda_id = v.id
        JOIN Produto p ON iv.produto_id = p.id
-      WHERE v.data_venda >= ? AND v.data_venda < ? AND v.gerente_id = ? AND p.gerente_id = ?
+      WHERE v.data_venda >= ? AND v.data_venda < ? AND v.gerente_id = ? AND p.gerente_id = ? AND v.status != 'cancelada'
       GROUP BY iv.produto_id
       ORDER BY qtd DESC
       LIMIT 5;`,
@@ -958,7 +1107,7 @@ export async function fetchReportData(days, gerenteId) {
   const limitDateISO = limitDate.toISOString();
 
   const currentSales = await db.getAllAsync(
-    'SELECT * FROM Venda WHERE data_venda >= ? AND gerente_id = ? ORDER BY datetime(data_venda) ASC;',
+    'SELECT * FROM Venda WHERE data_venda >= ? AND gerente_id = ? AND status != \'cancelada\' ORDER BY datetime(data_venda) ASC;',
     [limitDateISO, gerenteId]
   );
 
@@ -1071,10 +1220,26 @@ export async function syncActiveUser(user, setUser) {
         const newId = newUser.id;
         console.log(`[db] Usuário ativo cadastrado no Supabase com ID: ${newId}. Atualizando tabelas locais...`);
         
-        await db.runAsync('UPDATE Usuario SET id = ?, gerente_id = ? WHERE id = ?;', [newId, newId, user.id]);
-        await db.runAsync('UPDATE Produto SET gerente_id = ? WHERE gerente_id = ?;', [newId, user.gerente_id]);
-        await db.runAsync('UPDATE Venda SET gerente_id = ? WHERE gerente_id = ?;', [newId, user.gerente_id]);
-        await db.runAsync('UPDATE Configuracoes SET gerente_id = ? WHERE gerente_id = ?;', [newId, user.gerente_id]);
+        try {
+          await db.runAsync('UPDATE Usuario SET id = ?, gerente_id = ? WHERE id = ?;', [newId, newId, user.id]);
+        } catch (errU) {
+          console.warn('[db] Aviso ao atualizar Usuario:', errU.message);
+        }
+        try {
+          await db.runAsync('UPDATE Produto SET gerente_id = ? WHERE gerente_id = ?;', [newId, user.gerente_id]);
+        } catch (errP) {
+          console.warn('[db] Aviso ao atualizar Produto:', errP.message);
+        }
+        try {
+          await db.runAsync('UPDATE Venda SET gerente_id = ? WHERE gerente_id = ?;', [newId, user.gerente_id]);
+        } catch (errV) {
+          console.warn('[db] Aviso ao atualizar Venda:', errV.message);
+        }
+        try {
+          await db.runAsync('UPDATE Configuracoes SET gerente_id = ? WHERE gerente_id = ?;', [newId, user.gerente_id]);
+        } catch (errC) {
+          console.warn('[db] Aviso ao atualizar Configuracoes:', errC.message);
+        }
 
         setUser({
           ...user,
@@ -1086,10 +1251,26 @@ export async function syncActiveUser(user, setUser) {
       const remoteId = data[0].id;
       if (user.id !== remoteId) {
         console.log(`[db] Alinhando ID local (${user.id}) com ID Supabase (${remoteId})...`);
-        await db.runAsync('UPDATE Usuario SET id = ?, gerente_id = ? WHERE id = ?;', [remoteId, remoteId, user.id]);
-        await db.runAsync('UPDATE Produto SET gerente_id = ? WHERE gerente_id = ?;', [remoteId, user.gerente_id]);
-        await db.runAsync('UPDATE Venda SET gerente_id = ? WHERE gerente_id = ?;', [remoteId, user.gerente_id]);
-        await db.runAsync('UPDATE Configuracoes SET gerente_id = ? WHERE gerente_id = ?;', [remoteId, user.gerente_id]);
+        try {
+          await db.runAsync('UPDATE Usuario SET id = ?, gerente_id = ? WHERE id = ?;', [remoteId, remoteId, user.id]);
+        } catch (errU) {
+          console.warn('[db] Aviso ao alinhar Usuario:', errU.message);
+        }
+        try {
+          await db.runAsync('UPDATE Produto SET gerente_id = ? WHERE gerente_id = ?;', [remoteId, user.gerente_id]);
+        } catch (errP) {
+          console.warn('[db] Aviso ao alinhar Produto:', errP.message);
+        }
+        try {
+          await db.runAsync('UPDATE Venda SET gerente_id = ? WHERE gerente_id = ?;', [remoteId, user.gerente_id]);
+        } catch (errV) {
+          console.warn('[db] Aviso ao alinhar Venda:', errV.message);
+        }
+        try {
+          await db.runAsync('UPDATE Configuracoes SET gerente_id = ? WHERE gerente_id = ?;', [remoteId, user.gerente_id]);
+        } catch (errC) {
+          console.warn('[db] Aviso ao alinhar Configuracoes:', errC.message);
+        }
         
         setUser({
           ...user,
@@ -1099,6 +1280,6 @@ export async function syncActiveUser(user, setUser) {
       }
     }
   } catch (e) {
-    console.error('[db] Erro ao sincronizar usuário ativo:', e);
+    console.warn('[db] Sincronização de usuário ativo adiada (modo offline ou rede indisponível):', e?.message || e);
   }
 }

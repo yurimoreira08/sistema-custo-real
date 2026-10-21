@@ -167,6 +167,41 @@ export default function LoginScreen() {
                 )}
               </TouchableOpacity>
 
+              <View style={styles.quickTestBox}>
+                <Text style={styles.quickTestTitle}>Perfis Prontos para Teste:</Text>
+                <View style={styles.quickTestRow}>
+                  <TouchableOpacity
+                    style={styles.quickTestChip}
+                    onPress={() => {
+                      setUsername('admin@lucrocerto.com');
+                      setPassword('123456');
+                    }}
+                  >
+                    <Text style={styles.quickTestChipEmoji}>👑</Text>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.quickTestChipTitle}>Gerente (Acesso Total)</Text>
+                      <Text style={styles.quickTestChipSub}>admin@lucrocerto.com • 123456</Text>
+                    </View>
+                    <Ionicons name="finger-print-outline" size={18} color="#1E63EC" />
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.quickTestChip}
+                    onPress={() => {
+                      setUsername('balcao@lucrocerto.com');
+                      setPassword('123456');
+                    }}
+                  >
+                    <Text style={styles.quickTestChipEmoji}>💼</Text>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.quickTestChipTitle}>Balconista (Caixa/PDV)</Text>
+                      <Text style={styles.quickTestChipSub}>balcao@lucrocerto.com • 123456</Text>
+                    </View>
+                    <Ionicons name="finger-print-outline" size={18} color="#1E63EC" />
+                  </TouchableOpacity>
+                </View>
+              </View>
+
               <TouchableOpacity 
                 style={styles.toggleBtn}
                 onPress={() => setIsSignup(true)}
@@ -444,5 +479,53 @@ const styles = StyleSheet.create({
   footerVersion: {
     color: '#A0AEC0',
     fontSize: 12,
+  },
+  quickTestBox: {
+    marginTop: 20,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  quickTestTitle: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#4A5568',
+    marginBottom: 8,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  quickTestRow: {
+    gap: 8,
+  },
+  quickTestChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    gap: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  quickTestChipEmoji: {
+    fontSize: 20,
+  },
+  quickTestChipTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1A202C',
+  },
+  quickTestChipSub: {
+    fontSize: 11,
+    color: '#718096',
+    marginTop: 1,
   },
 });

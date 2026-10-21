@@ -18,13 +18,15 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useApp } from '../context/AppContext';
-import { fetchReportData, fetchUsers, registerUser, deleteUser } from '../database/db';
+import { fetchReportData, fetchUsers, registerUser, deleteUser, apurarLucroReal, fetchRelatorioPerdas } from '../database/db';
 import { Ionicons } from '@expo/vector-icons';
 import SyncBadge from '../components/SyncBadge';
+import PaymentTaxConfigModal from '../components/PaymentTaxConfigModal';
 
 export default function ReportsScreen() {
   const { user, logout, settings, updateSettings, refreshData } = useApp();
   const [selectedPeriod, setSelectedPeriod] = useState(7);
+  const [selectedCanalFilter, setSelectedCanalFilter] = useState('todos');
   const [reportData, setReportData] = useState({
     receitaTotal: 0,
     custoTotal: 0,
@@ -33,6 +35,9 @@ export default function ReportsScreen() {
     prevReceita: 0,
     chartData: []
   });
+  const [lucroRealData, setLucroRealData] = useState(null);
+  const [perdasReportData, setPerdasReportData] = useState(null);
+  const [taxConfigModalVisible, setTaxConfigModalVisible] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const [settingsModalVisible, setSettingsModalVisible] = useState(false);
@@ -54,7 +59,7 @@ export default function ReportsScreen() {
     useCallback(() => {
       loadReportDetails();
       loadTeamList();
-    }, [selectedPeriod, user])
+    }, [selectedPeriod, selectedCanalFilter, user])
   );
 
   useEffect(() => {
@@ -79,8 +84,18 @@ export default function ReportsScreen() {
   const loadReportDetails = async () => {
     setLoading(true);
     try {
-      const data = await fetchReportData(selectedPeriod, user.gerente_id);
+      const dInicio = new Date();
+      dInicio.setDate(dInicio.getDate() - selectedPeriod);
+      const isoInicio = dInicio.toISOString();
+
+      const [data, lucroReal, perdas] = await Promise.all([
+        fetchReportData(selectedPeriod, user.gerente_id),
+        apurarLucroReal(user.gerente_id, { dataInicio: isoInicio, canalVenda: selectedCanalFilter }),
+        fetchRelatorioPerdas(user.gerente_id, { dataInicio: isoInicio })
+      ]);
       setReportData(data);
+      setLucroRealData(lucroReal);
+      setPerdasReportData(perdas);
     } catch (error) {
       console.error('Erro ao carregar dados do relatório:', error);
     } finally {
@@ -99,17 +114,17 @@ export default function ReportsScreen() {
     }).format(val || 0);
   };
 
-  const margemPercent = reportData.receitaTotal > 0 
-    ? ((reportData.lucroTotal / reportData.receitaTotal) * 100).toFixed(1) 
+  const margemPercent = (reportData && reportData.receitaTotal > 0 && reportData.lucroTotal != null)
+    ? ((Number(reportData.lucroTotal) / Number(reportData.receitaTotal)) * 100).toFixed(1) 
     : '0.0';
 
-  const custoPercent = reportData.receitaTotal > 0 
-    ? ((reportData.custoTotal / reportData.receitaTotal) * 100).toFixed(1) 
+  const custoPercent = (reportData && reportData.receitaTotal > 0 && reportData.custoTotal != null)
+    ? ((Number(reportData.custoTotal) / Number(reportData.receitaTotal)) * 100).toFixed(1) 
     : '0.0';
 
   const getReceitaTrend = () => {
-    const curr = reportData.receitaTotal;
-    const prev = reportData.prevReceita;
+    const curr = Number(reportData?.receitaTotal || 0);
+    const prev = Number(reportData?.prevReceita || 0);
     if (prev === 0) return '▲ 100% vs período anterior';
     
     const diff = curr - prev;
@@ -187,6 +202,13 @@ export default function ReportsScreen() {
         </View>
         <View style={styles.headerRight}>
           <SyncBadge />
+          <TouchableOpacity
+            style={styles.settingsHeaderBtn}
+            onPress={() => setTaxConfigModalVisible(true)}
+            accessibilityLabel="Configurar Taxas de Pagamento"
+          >
+            <Ionicons name="card-outline" size={22} color="#FFF" />
+          </TouchableOpacity>
           <TouchableOpacity
             style={styles.settingsHeaderBtn}
             onPress={() => setSettingsModalVisible(true)}
@@ -409,6 +431,177 @@ export default function ReportsScreen() {
             )}
           </View>
         </View>
+
+        {/* ======================================================== */}
+        {/* SEÇÃO S04: MOTOR DE LUCRO REAL & CMV (Yuri Mauriz)        */}
+        {/* ======================================================== */}
+        <View style={styles.sectionHeaderWithAction}>
+          <Text style={styles.sectionTitle}>💰 Apuração de Lucro Real & CMV</Text>
+          <TouchableOpacity
+            style={styles.actionChipBtn}
+            onPress={() => setTaxConfigModalVisible(true)}
+          >
+            <Ionicons name="options-outline" size={14} color="#1E63EC" />
+            <Text style={styles.actionChipBtnText}>Taxas de Meios</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Filtro de Canais de Venda */}
+        <View style={styles.channelFilterContainer}>
+          {[
+            { id: 'todos', label: 'Todos os Canais' },
+            { id: 'balcao', label: 'Balcão' },
+            { id: 'delivery', label: 'Delivery' },
+            { id: 'encomenda', label: 'Encomenda' },
+          ].map((canal) => (
+            <TouchableOpacity
+              key={canal.id}
+              style={[
+                styles.channelChip,
+                selectedCanalFilter === canal.id && styles.channelChipActive,
+              ]}
+              onPress={() => setSelectedCanalFilter(canal.id)}
+            >
+              <Text
+                style={[
+                  styles.channelChipText,
+                  selectedCanalFilter === canal.id && styles.channelChipTextActive,
+                ]}
+              >
+                {canal.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        {lucroRealData && (
+          <View style={styles.lucroRealContainer}>
+            {/* Grid de 3 colunas ou blocos */}
+            <View style={styles.lucroRealSummaryCard}>
+              <View style={styles.lrRow}>
+                <Text style={styles.lrLabel}>Faturamento Elegível:</Text>
+                <Text style={styles.lrValGreen}>{formatCurrency(lucroRealData.faturamentoElegivel)}</Text>
+              </View>
+              <View style={styles.lrRow}>
+                <Text style={styles.lrLabel}>(-) Custo Mercadorias (CMV):</Text>
+                <Text style={styles.lrValOrange}>- {formatCurrency(lucroRealData.cmvEfetivo ?? lucroRealData.cmvTotal ?? 0)}</Text>
+              </View>
+              <View style={styles.lrRow}>
+                <Text style={styles.lrLabel}>(-) Taxas Operacionais (Meios):</Text>
+                <Text style={styles.lrValRed}>- {formatCurrency(lucroRealData.taxasOperacionais ?? 0)}</Text>
+              </View>
+              <View style={[styles.lrRow, styles.lrDivider]}>
+                <Text style={styles.lrLabelStrong}>Resultado após CMV e Taxas:</Text>
+                <Text style={[
+                  styles.lrValBig,
+                  (lucroRealData.resultadoAposCmvTaxas ?? lucroRealData.resultadoAposCmvETaxas ?? 0) >= 0 ? styles.textPositive : styles.textNegative
+                ]}>
+                  {formatCurrency(lucroRealData.resultadoAposCmvTaxas ?? lucroRealData.resultadoAposCmvETaxas ?? 0)}
+                </Text>
+              </View>
+              <View style={styles.lrMargemBadge}>
+                <Text style={styles.lrMargemBadgeText}>
+                  Margem Operacional Direta: {lucroRealData.margemPercentual ?? lucroRealData.margemContribuicaoPercent ?? 0}%
+                </Text>
+              </View>
+            </View>
+
+            {/* Apuração por Canal de Venda */}
+            {((lucroRealData.canais && lucroRealData.canais.length > 0) || (lucroRealData.porCanal && Object.keys(lucroRealData.porCanal).length > 0)) && (
+              <View style={styles.channelBreakdownCard}>
+                <Text style={styles.channelBreakdownTitle}>Detalhamento por Canal de Venda</Text>
+                {(lucroRealData.canais || Object.values(lucroRealData.porCanal || {})).map((dados, idx) => {
+                  const canalNome = dados.canal || `Canal ${idx + 1}`;
+                  const fat = dados.faturamentoElegivel ?? dados.faturamento ?? 0;
+                  const cmv = dados.cmv ?? 0;
+                  const taxas = dados.taxas ?? 0;
+                  const res = dados.resultadoAposCmvTaxas ?? dados.resultado ?? 0;
+
+                  return (
+                    <View key={canalNome} style={styles.channelBreakdownRow}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.channelNameText}>
+                          {canalNome === 'balcao' ? '🏪 Balcão' : canalNome === 'delivery' ? '🛵 Delivery' : canalNome === 'encomenda' ? '📦 Encomenda' : canalNome}
+                        </Text>
+                        <Text style={styles.channelSubText}>
+                          Fat: {formatCurrency(fat)} | CMV: {formatCurrency(cmv)} | Taxas: {formatCurrency(taxas)}
+                        </Text>
+                      </View>
+                      <Text style={[styles.channelResultText, res >= 0 ? styles.textPositive : styles.textNegative]}>
+                        {formatCurrency(res)}
+                      </Text>
+                    </View>
+                  );
+                })}
+              </View>
+            )}
+
+            {/* Aviso Contábil Oficial (S04 Requisito) */}
+            <View style={styles.accountingDisclaimerBox}>
+              <Ionicons name="information-circle-outline" size={18} color="#4A5568" style={{ marginRight: 6 }} />
+              <Text style={styles.accountingDisclaimerText}>
+                {lucroRealData.avisoContabil || 'Métrica apurada conforme edital S04.'}
+              </Text>
+            </View>
+          </View>
+        )}
+
+        {/* ======================================================== */}
+        {/* SEÇÃO S04: GESTÃO DE PERDAS E AVARIAS (Zé Neto)           */}
+        {/* ======================================================== */}
+        <Text style={[styles.sectionTitle, { marginTop: 24 }]}>⚠️ Relatório de Perdas e Avarias</Text>
+        <Text style={styles.sectionSubtitle}>
+          Baixas operacionais por quebra, extravio, furto ou vencimento rastreadas no Kardex.
+        </Text>
+
+        {perdasReportData && (
+          <View style={styles.perdasContainer}>
+            <View style={styles.gridRow}>
+              <View style={[styles.card, { backgroundColor: '#FFF5F5', borderColor: '#FEB2B2' }]}>
+                <Text style={styles.cardEmoji}>📉</Text>
+                <Text style={[styles.cardLabel, { color: '#E53E3E' }]}>IMPACTO FINANCEIRO</Text>
+                <Text style={[styles.cardValue, { color: '#9B1C1C' }]}>
+                  {formatCurrency(perdasReportData.impactoFinanceiroTotal ?? perdasReportData.totalPerdasFinanceiras ?? 0)}
+                </Text>
+                <Text style={styles.cardSubtext}>
+                  {perdasReportData.totalPerdasRegistradas ?? perdasReportData.totalRegistros ?? 0} registros
+                </Text>
+              </View>
+
+              <View style={styles.card}>
+                <Text style={styles.cardEmoji}>📦</Text>
+                <Text style={styles.cardLabel}>ITENS BAIXADOS</Text>
+                <Text style={styles.cardValue}>
+                  {Number(perdasReportData.quantidadeItensPerdidos ?? perdasReportData.totalItensPerdidos ?? 0).toFixed(2)}
+                </Text>
+                <Text style={styles.cardSubtext}>Unidades totais</Text>
+              </View>
+            </View>
+
+            {/* Lista dos últimos registros de perdas */}
+            {(perdasReportData.perdas || perdasReportData.detalhes || []).length > 0 && (
+              <View style={styles.perdasListCard}>
+                <Text style={styles.perdasListTitle}>Histórico Recente de Baixas</Text>
+                {(perdasReportData.perdas || perdasReportData.detalhes || []).slice(0, 5).map((perda) => (
+                  <View key={(perda.id || Math.random()).toString()} style={styles.perdaRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.perdaProdutoName}>{perda.produto_nome || `Produto #${perda.produto_id}`}</Text>
+                      <Text style={styles.perdaDetailText}>
+                        Motivo: <Text style={{ fontWeight: 'bold' }}>{perda.motivo_tipo || perda.tipo_perda}</Text> | Qtd: {perda.quantidade} | Justificativa: {perda.justificativa || 'Sem justificativa'}
+                      </Text>
+                    </View>
+                    <View style={{ alignItems: 'flex-end' }}>
+                      <Text style={styles.perdaImpactoText}>- {formatCurrency(perda.impacto_financeiro)}</Text>
+                      <Text style={styles.perdaDataText}>
+                        {new Date(perda.data_perda || perda.data_movimento || perda.created_at || Date.now()).toLocaleDateString('pt-BR')}
+                      </Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            )}
+          </View>
+        )}
       </ScrollView>
 
       {/* Modal Ajustar Split (Configurações) */}
@@ -656,6 +849,12 @@ export default function ReportsScreen() {
           setDeleteModalVisible(false);
           setMemberToDelete(null);
         }}
+      />
+
+      <PaymentTaxConfigModal
+        visible={taxConfigModalVisible}
+        onClose={() => setTaxConfigModalVisible(false)}
+        onSaved={loadReportDetails}
       />
     </SafeAreaView>
   );
@@ -1203,5 +1402,228 @@ const styles = StyleSheet.create({
     color: '#718096',
     marginTop: 8,
     lineHeight: 15,
+  },
+  sectionHeaderWithAction: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 20,
+    marginBottom: 8,
+  },
+  actionChipBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EBF8FF',
+    borderWidth: 1,
+    borderColor: '#BEE3F8',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    gap: 4,
+  },
+  actionChipBtnText: {
+    fontSize: 11,
+    fontWeight: 'bold',
+    color: '#1E63EC',
+  },
+  channelFilterContainer: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 12,
+  },
+  channelChip: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  channelChipActive: {
+    backgroundColor: '#1E63EC',
+    borderColor: '#1E63EC',
+  },
+  channelChipText: {
+    fontSize: 12,
+    color: '#4A5568',
+    fontWeight: '600',
+  },
+  channelChipTextActive: {
+    color: '#FFFFFF',
+  },
+  lucroRealContainer: {
+    marginBottom: 16,
+  },
+  lucroRealSummaryCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
+    marginBottom: 12,
+  },
+  lrRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 6,
+  },
+  lrDivider: {
+    borderTopWidth: 1,
+    borderTopColor: '#E2E8F0',
+    marginTop: 8,
+    paddingTop: 10,
+  },
+  lrLabel: {
+    fontSize: 13,
+    color: '#4A5568',
+  },
+  lrLabelStrong: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#1A202C',
+  },
+  lrValGreen: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#276749',
+  },
+  lrValOrange: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#DD6B20',
+  },
+  lrValRed: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#E53E3E',
+  },
+  lrValBig: {
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  textPositive: {
+    color: '#2F855A',
+  },
+  textNegative: {
+    color: '#C53030',
+  },
+  lrMargemBadge: {
+    backgroundColor: '#EBF8FF',
+    borderRadius: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    marginTop: 10,
+    alignItems: 'center',
+  },
+  lrMargemBadgeText: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#2B6CB0',
+  },
+  channelBreakdownCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 12,
+  },
+  channelBreakdownTitle: {
+    fontSize: 13,
+    fontWeight: 'bold',
+    color: '#2D3748',
+    marginBottom: 10,
+  },
+  channelBreakdownRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F7FAFC',
+  },
+  channelNameText: {
+    fontSize: 13,
+    fontWeight: 'bold',
+    color: '#2D3748',
+  },
+  channelSubText: {
+    fontSize: 11,
+    color: '#718096',
+    marginTop: 2,
+  },
+  channelResultText: {
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  accountingDisclaimerBox: {
+    flexDirection: 'row',
+    backgroundColor: '#EDF2F7',
+    borderRadius: 10,
+    padding: 12,
+    alignItems: 'flex-start',
+  },
+  accountingDisclaimerText: {
+    flex: 1,
+    fontSize: 11,
+    color: '#4A5568',
+    lineHeight: 16,
+  },
+  sectionSubtitle: {
+    fontSize: 12,
+    color: '#718096',
+    marginBottom: 12,
+    marginTop: -8,
+  },
+  perdasContainer: {
+    gap: 12,
+    marginBottom: 20,
+  },
+  perdasListCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  perdasListTitle: {
+    fontSize: 13,
+    fontWeight: 'bold',
+    color: '#2D3748',
+    marginBottom: 10,
+  },
+  perdaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F7FAFC',
+  },
+  perdaProdutoName: {
+    fontSize: 13,
+    fontWeight: 'bold',
+    color: '#2D3748',
+  },
+  perdaDetailText: {
+    fontSize: 11,
+    color: '#718096',
+    marginTop: 2,
+  },
+  perdaImpactoText: {
+    fontSize: 13,
+    fontWeight: 'bold',
+    color: '#E53E3E',
+  },
+  perdaDataText: {
+    fontSize: 10,
+    color: '#A0AEC0',
+    marginTop: 2,
   },
 });

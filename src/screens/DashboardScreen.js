@@ -14,12 +14,28 @@ import { useApp } from '../context/AppContext';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import SyncBadge from '../components/SyncBadge';
+import ManagerAuthModal from '../components/ManagerAuthModal';
+import SaleReturnModal from '../components/SaleReturnModal';
+import ConfirmationModal from '../components/ConfirmationModal';
+import { cancelarVendaComAutorizacao } from '../database/db';
 
 // Tela principal (Dashboard) que exibe o resumo financeiro, controle de estoque e últimas vendas
 export default function DashboardScreen() {
   const { user, logout, dashboardDetails, refreshData } = useApp();
   const [refreshing, setRefreshing] = useState(false);
   const navigation = useNavigation();
+
+  // Modais de Cancelamento e Devolução (Yuri Moreira S03/S04)
+  const [cancelModalVisible, setCancelModalVisible] = useState(false);
+  const [vendaToCancel, setVendaToCancel] = useState(null);
+  const [returnModalVisible, setReturnModalVisible] = useState(false);
+  const [vendaToReturn, setVendaToReturn] = useState(null);
+  const [cancelLoading, setCancelLoading] = useState(false);
+
+  const [alertConfig, setAlertConfig] = useState({ visible: false, title: '', message: '', type: 'info' });
+  const showAlert = (title, message, type = 'info') => {
+    setAlertConfig({ visible: true, title, message, type });
+  };
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -178,32 +194,149 @@ export default function DashboardScreen() {
             </View>
           ) : (
             <View style={styles.salesList}>
-              {stats.ultimasVendas.map((item, index) => (
-                <View 
-                  key={item.id.toString()} 
-                  style={[
-                    styles.saleItemRow, 
-                    index === stats.ultimasVendas.length - 1 && { borderBottomWidth: 0 }
-                  ]}
-                >
-                  <View style={styles.saleItemLeft}>
-                    <View style={styles.saleIconBg}>
-                      <Ionicons name="fast-food-outline" size={20} color="#1E63EC" />
+              {stats.ultimasVendas.map((item, index) => {
+                const isCancelada = item.status === 'cancelada';
+                const isDevolvida = item.status === 'parcialmente_devolvida';
+
+                return (
+                  <View 
+                    key={item.id.toString()} 
+                    style={[
+                      styles.saleItemRow, 
+                      index === stats.ultimasVendas.length - 1 && { borderBottomWidth: 0 },
+                      isCancelada && { opacity: 0.6 }
+                    ]}
+                  >
+                    <View style={styles.saleItemLeft}>
+                      <View style={[styles.saleIconBg, isCancelada && { backgroundColor: '#FEE2E2' }]}>
+                        <Ionicons 
+                          name={isCancelada ? "close-circle" : "cart"} 
+                          size={20} 
+                          color={isCancelada ? "#DC2626" : "#1E63EC"} 
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Text style={styles.saleItemTitle} numberOfLines={1}>{item.descricaoItens}</Text>
+                          {isCancelada && (
+                            <View style={styles.badgeCancelada}>
+                              <Text style={styles.badgeCanceladaText}>CANCELADA</Text>
+                            </View>
+                          )}
+                          {isDevolvida && (
+                            <View style={styles.badgeDevolvida}>
+                              <Text style={styles.badgeDevolvidaText}>DEVOLVIDA</Text>
+                            </View>
+                          )}
+                        </View>
+                        <Text style={styles.saleItemSubtitle} numberOfLines={1}>
+                          {getTimeElapsed(item.data_venda)} — {item.totalQtdItens} un • {item.canal_venda || 'balcão'}
+                        </Text>
+                      </View>
                     </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.saleItemTitle} numberOfLines={1}>{item.descricaoItens}</Text>
-                      <Text style={styles.saleItemSubtitle} numberOfLines={1}>
-                        {getTimeElapsed(item.data_venda)} — {item.totalQtdItens} itens
+
+                    <View style={{ alignItems: 'flex-end', gap: 4 }}>
+                      <Text style={[styles.saleItemValue, isCancelada && { textDecorationLine: 'line-through', color: '#94A3B8' }]}>
+                        {formatCurrency(item.valor_total)}
                       </Text>
+
+                      {!isCancelada && user?.cargo === 'gerente' && (
+                        <View style={{ flexDirection: 'row', gap: 4 }}>
+                          <TouchableOpacity
+                            style={styles.actionBtnDevolver}
+                            onPress={() => {
+                              setVendaToReturn(item);
+                              setReturnModalVisible(true);
+                            }}
+                          >
+                            <Ionicons name="return-down-back" size={12} color="#8B5CF6" />
+                            <Text style={styles.actionBtnDevolverText}>Devolver</Text>
+                          </TouchableOpacity>
+
+                          <TouchableOpacity
+                            style={styles.actionBtnCancelar}
+                            onPress={() => {
+                              setVendaToCancel(item);
+                              setCancelModalVisible(true);
+                            }}
+                          >
+                            <Ionicons name="close-circle-outline" size={12} color="#EF4444" />
+                            <Text style={styles.actionBtnCancelarText}>Cancelar</Text>
+                          </TouchableOpacity>
+                        </View>
+                      )}
                     </View>
                   </View>
-                  <Text style={styles.saleItemValue}>{formatCurrency(item.valor_total)}</Text>
-                </View>
-              ))}
+                );
+              })}
             </View>
           )}
         </View>
       </ScrollView>
+
+      {/* Modal de Autorização Gerencial para Cancelamento de Venda (Yuri Moreira S03) */}
+      <ManagerAuthModal
+        visible={cancelModalVisible}
+        title={`Cancelar Venda #${vendaToCancel?.id || ''}`}
+        subtitle={`Atenção: Todos os efeitos financeiros e de estoque da venda serão estornados.`}
+        actionButtonText="Confirmar Cancelamento"
+        loading={cancelLoading}
+        onConfirm={async ({ senha, justificativa }) => {
+          setCancelLoading(true);
+          try {
+            await cancelarVendaComAutorizacao({
+              vendaId: vendaToCancel.id,
+              gerenteId: user.gerente_id,
+              usuarioId: user.id,
+              senhaGerente: senha,
+              justificativa
+            });
+            setCancelModalVisible(false);
+            setVendaToCancel(null);
+            await refreshData();
+            showAlert('Sucesso', 'Venda cancelada com sucesso! O estoque e o financeiro foram devidamente estornados.', 'info');
+          } catch (e) {
+            showAlert('Erro', e.message || 'Falha ao cancelar venda.', 'danger');
+          } finally {
+            setCancelLoading(false);
+          }
+        }}
+        onCancel={() => {
+          setCancelModalVisible(false);
+          setVendaToCancel(null);
+        }}
+      />
+
+      {/* Modal de Devolução Parcial de Itens (Yuri Moreira S04) */}
+      <SaleReturnModal
+        visible={returnModalVisible}
+        venda={vendaToReturn}
+        gerenteId={user?.gerente_id}
+        usuarioId={user?.id}
+        onSuccess={async (comprovante) => {
+          await refreshData();
+          showAlert(
+            'Devolução Processada',
+            `Estorno no valor de ${formatCurrency(comprovante.valorTotalEstornado)} realizado com sucesso!\nProdutos aptos foram reincorporados ao estoque.`,
+            'info'
+          );
+        }}
+        onClose={() => {
+          setReturnModalVisible(false);
+          setVendaToReturn(null);
+        }}
+      />
+
+      {/* Alerta */}
+      <ConfirmationModal
+        visible={alertConfig.visible}
+        title={alertConfig.title}
+        message={alertConfig.message}
+        confirmText="OK"
+        cancelText={null}
+        type={alertConfig.type}
+        onConfirm={() => setAlertConfig({ visible: false, title: '', message: '', type: 'info' })}
+      />
     </SafeAreaView>
   );
 }
@@ -458,5 +591,59 @@ const styles = StyleSheet.create({
     flexShrink: 0,
     marginLeft: 8,
     textAlign: 'right',
+  },
+  badgeCancelada: {
+    backgroundColor: '#FEE2E2',
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 4,
+  },
+  badgeCanceladaText: {
+    color: '#DC2626',
+    fontSize: 9,
+    fontWeight: '800',
+  },
+  badgeDevolvida: {
+    backgroundColor: '#F3E8FF',
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 4,
+  },
+  badgeDevolvidaText: {
+    color: '#7C3AED',
+    fontSize: 9,
+    fontWeight: '800',
+  },
+  actionBtnDevolver: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F3E8FF',
+    borderWidth: 1,
+    borderColor: '#DDD6FE',
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 4,
+    gap: 3,
+  },
+  actionBtnDevolverText: {
+    color: '#7C3AED',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  actionBtnCancelar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEE2E2',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 4,
+    gap: 3,
+  },
+  actionBtnCancelarText: {
+    color: '#DC2626',
+    fontSize: 10,
+    fontWeight: '700',
   },
 });

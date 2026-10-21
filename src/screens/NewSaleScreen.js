@@ -14,12 +14,13 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useApp } from '../context/AppContext';
-import { registerSale } from '../database/db';
+import { registerSale, finalizarVendaCompleta } from '../database/db';
 import { Ionicons } from '@expo/vector-icons';
 import BarcodeScannerModal from '../components/BarcodeScannerModal';
 import { feedbackFound, feedbackNotFound } from '../utils/scanFeedback';
 import SyncBadge from '../components/SyncBadge';
 import ConfirmationModal from '../components/ConfirmationModal';
+import CheckoutPaymentModal from '../components/CheckoutPaymentModal';
 
 export default function NewSaleScreen() {
   const { user, products, settings, sales, refreshData } = useApp();
@@ -30,6 +31,9 @@ export default function NewSaleScreen() {
   const [clearCartModalVisible, setClearCartModalVisible] = useState(false);
   const [checkoutModalVisible, setCheckoutModalVisible] = useState(false);
   const [successModalVisible, setSuccessModalVisible] = useState(false);
+
+  const [vendaSucessoInfo, setVendaSucessoInfo] = useState(null);
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
 
   const [alertVisible, setAlertVisible] = useState(false);
   const [alertConfig, setAlertConfig] = useState({ title: '', message: '', type: 'info' });
@@ -118,15 +122,27 @@ export default function NewSaleScreen() {
     setCheckoutModalVisible(true);
   };
 
-  const confirmCheckout = async () => {
-    setCheckoutModalVisible(false);
+  const confirmCheckout = async (dadosCheckout) => {
+    setCheckoutLoading(true);
     try {
-      await registerSale(cart, settings, user.gerente_id);
+      const res = await finalizarVendaCompleta({
+        carrinho: cart,
+        pagamentos: dadosCheckout.pagamentos,
+        clienteId: dadosCheckout.clienteId,
+        descontoGlobal: dadosCheckout.descontoGlobal,
+        canalVenda: dadosCheckout.canalVenda,
+        usuarioId: user.id
+      }, user.gerente_id);
+
+      setCheckoutModalVisible(false);
+      setVendaSucessoInfo(res);
       setSuccessModalVisible(true);
       await refreshData();
     } catch (error) {
       showCustomAlert('Erro ao Finalizar Venda', error.message || 'Houve um erro no processamento.', 'danger');
       console.error(error);
+    } finally {
+      setCheckoutLoading(false);
     }
   };
 
@@ -397,34 +413,34 @@ export default function NewSaleScreen() {
         onCancel={() => setClearCartModalVisible(false)}
       />
 
-      {/* Modal de confirmação de checkout */}
-      <ConfirmationModal
+      {/* Modal de confirmação de checkout com formas de pagamento e taxas */}
+      <CheckoutPaymentModal
         visible={checkoutModalVisible}
-        title="Confirmar Venda"
-        message={`Deseja finalizar esta venda no valor total de ${formatCurrency(subtotal)}?`}
-        confirmText="Finalizar"
-        cancelText="Cancelar"
-        type="info"
-        onConfirm={confirmCheckout}
-        onCancel={() => setCheckoutModalVisible(false)}
+        totalVenda={subtotal}
+        gerenteId={user?.gerente_id}
+        loading={checkoutLoading}
+        onConfirmSale={confirmCheckout}
+        onClose={() => setCheckoutModalVisible(false)}
       />
 
-      {/* Modal de sucesso pós-venda (exibição de splits) */}
+      {/* Modal de sucesso pós-venda (exibição de recebimentos, taxas e lucro real) */}
       <ConfirmationModal
         visible={successModalVisible}
-        title="Venda Finalizada!"
+        title={`Venda Finalizada! #${vendaSucessoInfo?.vendaId || ''}`}
         message={
-          `Faturamento Total: ${formatCurrency(subtotal)}\n\n` +
-          `Split de Faturamento:\n` +
-          `• Reposição (CMV ${settings.percentual_cmv}%): ${formatCurrency(cmvSplit)}\n` +
-          `• Operações (OpEx ${settings.percentual_opex}%): ${formatCurrency(opexSplit)}\n` +
-          `• Lucro Líquido (${settings.percentual_lucro}%): ${formatCurrency(lucroSplit)}`
+          `Faturamento Total: ${formatCurrency(vendaSucessoInfo?.valorTotal || subtotal)}\n` +
+          `Taxas Operacionais: -${formatCurrency(vendaSucessoInfo?.taxas || 0)}\n` +
+          `Valor Líquido Recebido: ${formatCurrency(vendaSucessoInfo?.valorLiquido || subtotal)}\n` +
+          `CMV dos Produtos: ${formatCurrency(vendaSucessoInfo?.cmv || 0)}\n\n` +
+          `Pagamentos Registrados:\n` +
+          (vendaSucessoInfo?.pagamentos?.map(p => `• ${p.forma_pagamento.toUpperCase()}: ${formatCurrency(p.valor_bruto)} (Líq: ${formatCurrency(p.valor_liquido)})`).join('\n') || '')
         }
         confirmText="OK"
         cancelText={null}
         type="info"
         onConfirm={() => {
           setCart([]);
+          setVendaSucessoInfo(null);
           setSuccessModalVisible(false);
         }}
       />
