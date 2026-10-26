@@ -1,8 +1,16 @@
 import { getDb } from '../database/dbInstance';
 import { syncOrEnqueue } from '../database/syncService';
+import { 
+  round2, 
+  round3, 
+  multiplyMoney, 
+  sumMoney, 
+  toCents, 
+  fromCents 
+} from '../utils/money';
 
 // ========================================================
-// SERVIÇO DE ESTOQUE, FORNECEDORES, KARDEX E PERDAS (S01 A S04)
+// SERVIÇO DE ESTOQUE, FORNECEDORES, KARDEX E PERDAS (S01 A S05)
 // Integrante: José da Luz Coelho Neto
 // ========================================================
 
@@ -406,7 +414,7 @@ export async function registrarEntradaMercadorias(dadosEntrada, gerenteId, dbOve
 // 4. GESTÃO DE PERDAS E AVARIAS (Zé Neto S04)
 // --------------------------------------------------------
 
-export const TIPOS_PERDA_VALIDOS = ['quebra', 'avaria', 'extravio', 'furto'];
+export const TIPOS_PERDA_VALIDOS = ['quebra', 'avaria', 'extravio', 'furto', 'vencimento'];
 
 /**
  * Registra uma perda ou avaria de estoque, validando saldo disponível,
@@ -430,7 +438,7 @@ export async function registrarPerdaEstoque(dadosPerda, gerenteId, dbOverride = 
     throw new Error(`Tipo de perda inválido. Deve ser um dos seguintes: ${TIPOS_PERDA_VALIDOS.join(', ')}.`);
   }
 
-  const qtdPerda = parseFloat(quantidade);
+  const qtdPerda = round3(parseFloat(quantidade));
   if (isNaN(qtdPerda) || qtdPerda <= 0) {
     throw new Error('A quantidade de perda deve ser maior que zero.');
   }
@@ -453,8 +461,8 @@ export async function registrarPerdaEstoque(dadosPerda, gerenteId, dbOverride = 
       throw new Error('Produto não encontrado.');
     }
     const prod = prodRows[0];
-    const saldoAtual = parseFloat(prod.estoque) || 0;
-    const custoUnitario = parseFloat(prod.preco_custo) || 0;
+    const saldoAtual = round3(parseFloat(prod.estoque) || 0);
+    const custoUnitario = round2(parseFloat(prod.preco_custo) || 0);
 
     if (qtdPerda > saldoAtual) {
       throw new Error(
@@ -462,8 +470,8 @@ export async function registrarPerdaEstoque(dadosPerda, gerenteId, dbOverride = 
       );
     }
 
-    saldoRestante = parseFloat((saldoAtual - qtdPerda).toFixed(3));
-    impactoFinanceiro = parseFloat((qtdPerda * custoUnitario).toFixed(2));
+    saldoRestante = round3(saldoAtual - qtdPerda);
+    impactoFinanceiro = multiplyMoney(custoUnitario, qtdPerda);
     const now = new Date().toISOString();
 
     // 1. Atualiza estoque do produto
@@ -532,19 +540,164 @@ export async function registrarPerdaEstoque(dadosPerda, gerenteId, dbOverride = 
   };
 }
 
+// --------------------------------------------------------
+// 5. AUDITORIA DE KARDEX E RECONSTRUÇÃO DE SALDO (Zé Neto S05)
+// --------------------------------------------------------
+
 /**
- * Relatório gerencial de perdas por período
+ * Compara o saldo físico atual do produto com o saldo reconstruído
+ * a partir de toda a cadeia histórica de movimentações do Kardex.
+ * Não altera registros (estritamente analítico e não-destrutivo).
  */
-export async function fetchRelatorioPerdas(gerenteId, options = {}, dbOverride = null) {
+export async function auditarSaldoKardex(produtoId, gerenteId, dbOverride = null) {
   const db = dbOverride || await getDb();
-  const { dataInicio, dataFim } = options;
+
+  const prodRows = await db.getAllAsync(
+    'SELECT id, nome, codigo_barras, estoque, preco_custo FROM Produto WHERE id = ? AND gerente_id = ?;',
+    [produtoId, gerenteId]
+  );
+  if (prodRows.length === 0) {
+    throw new Error(`Produto #${produtoId} não encontrado.`);
+  }
+  const prod = prodRows[0];
+  const estoqueFisico = round3(prod.estoque);
+
+  // Busca todas as movimentações do produto ordenadas cronologicamente
+  const movs = await db.getAllAsync(
+    'SELECT * FROM MovimentacaoEstoque WHERE produto_id = ? AND gerente_id = ? ORDER BY datetime(data_movimentacao) ASC, id ASC;',
+    [produtoId, gerenteId]
+  );
+
+  let saldoReconstruido = 0;
+  const errosContinuidade = [];
+  let ultimoSaldo = null;
+
+  if (movs.length > 0) {
+    saldoReconstruido = round3(movs[0].saldo_anterior);
+    ultimoSaldo = saldoReconstruido;
+
+    for (let i = 0; i < movs.length; i++) {
+      const m = movs[i];
+      const qtd = round3(m.quantidade);
+      const anterior = round3(m.saldo_anterior);
+      const resultante = round3(m.saldo_resultante);
+
+      // Verifica se houve salto não rastreado entre a linha anterior e a atual
+      if (i > 0 && Math.abs(anterior - ultimoSaldo) > 0.0001) {
+        errosContinuidade.push({
+          movimentacaoId: m.id,
+          tipoErro: 'SALTO_DE_SALDO',
+          mensagem: `Movimentação #${m.id}: saldo anterior (${anterior}) difere do resultante anterior (${ultimoSaldo}).`
+        });
+      }
+
+      // Verifica consistência matemática interna da movimentação
+      const resultanteEsperado = round3(anterior + qtd);
+      if (Math.abs(resultanteEsperado - resultante) > 0.0001) {
+        errosContinuidade.push({
+          movimentacaoId: m.id,
+          tipoErro: 'CALCULO_RESULTANTE_INVALIDO',
+          mensagem: `Movimentação #${m.id}: anterior (${anterior}) + quant (${qtd}) = ${resultanteEsperado}, mas banco registrou ${resultante}.`
+        });
+      }
+
+      saldoReconstruido = resultante;
+      ultimoSaldo = resultante;
+    }
+  } else {
+    // Produto sem movimentações: saldo reconstruído coincide com estoque atual
+    saldoReconstruido = estoqueFisico;
+  }
+
+  const diferenca = round3(estoqueFisico - saldoReconstruido);
+  const conforme = Math.abs(diferenca) < 0.0001 && errosContinuidade.length === 0;
+
+  return {
+    produtoId: prod.id,
+    nome: prod.nome,
+    codigoBarras: prod.codigo_barras,
+    estoqueAtual: estoqueFisico,
+    saldoReconstruido,
+    divergencia: diferenca,
+    conforme,
+    totalMovimentacoes: movs.length,
+    errosContinuidade,
+    historico: movs
+  };
+}
+
+/**
+ * Executa a rotina de auditoria de Kardex para todos os produtos do estoque
+ */
+export async function auditarTodosProdutosKardex(gerenteId, dbOverride = null) {
+  const db = dbOverride || await getDb();
+
+  const produtos = await db.getAllAsync(
+    'SELECT id FROM Produto WHERE gerente_id = ? ORDER BY nome ASC;',
+    [gerenteId]
+  );
+
+  let totalProdutosAuditados = produtos.length;
+  let produtosConformes = 0;
+  let produtosComDivergencia = 0;
+  const divergencias = [];
+
+  for (const p of produtos) {
+    const aud = await auditarSaldoKardex(p.id, gerenteId, db);
+    if (aud.conforme) {
+      produtosConformes++;
+    } else {
+      produtosComDivergencia++;
+      divergencias.push({
+        produtoId: aud.produtoId,
+        nome: aud.nome,
+        codigoBarras: aud.codigoBarras,
+        estoqueAtual: aud.estoqueAtual,
+        saldoReconstruido: aud.saldoReconstruido,
+        divergencia: aud.divergencia,
+        errosContinuidade: aud.errosContinuidade
+      });
+    }
+  }
+
+  return {
+    statusGeral: divergencias.length === 0 ? 'CONFORME' : 'DIVERGENCIA_ENCONTRADA',
+    totalProdutosAuditados,
+    produtosConformes,
+    produtosComDivergencia,
+    divergencias
+  };
+}
+
+// --------------------------------------------------------
+// 6. RELATÓRIO GERENCIAL DE PERDAS E AVARIAS (Zé Neto S05)
+// --------------------------------------------------------
+
+/**
+ * Relatório gerencial detalhado de perdas e avarias por período e categoria,
+ * consolidando impactos financeiros com custos históricos unitários.
+ */
+export async function fetchRelatorioPerdasAvariasDetalhado(gerenteId, options = {}, dbOverride = null) {
+  const db = dbOverride || await getDb();
+  const { dataInicio, dataFim, tipoPerda } = options;
 
   let query = `
     SELECT 
-      pe.*,
+      pe.id,
+      pe.gerente_id,
+      pe.produto_id,
+      pe.usuario_id,
+      pe.tipo_perda,
+      pe.quantidade,
+      pe.custo_unitario,
+      pe.impacto_financeiro,
+      pe.justificativa,
+      pe.data_perda,
       p.nome as produto_nome,
       p.codigo_barras,
-      u.nome as usuario_nome
+      p.categoria as produto_categoria,
+      u.nome as usuario_nome,
+      u.cargo as usuario_cargo
     FROM PerdaEstoque pe
     JOIN Produto p ON pe.produto_id = p.id
     LEFT JOIN Usuario u ON pe.usuario_id = u.id
@@ -560,37 +713,64 @@ export async function fetchRelatorioPerdas(gerenteId, options = {}, dbOverride =
     query += ' AND pe.data_perda <= ?';
     params.push(dataFim);
   }
+  if (tipoPerda && tipoPerda !== 'todos') {
+    query += ' AND pe.tipo_perda = ?';
+    params.push(tipoPerda.toLowerCase().trim());
+  }
 
-  query += ' ORDER BY datetime(pe.data_perda) DESC;';
+  query += ' ORDER BY datetime(pe.data_perda) DESC, pe.id DESC;';
 
   const rows = await db.getAllAsync(query, params);
 
   const porTipo = {};
-  let totalPerdasFinanceiras = 0;
+  const porCategoria = {};
+  let impactoFinanceiroTotal = 0;
   let totalItensPerdidos = 0;
 
-  for (const row of rows) {
-    const impacto = parseFloat(row.impacto_financeiro) || 0;
-    const qtd = parseFloat(row.quantidade) || 0;
-    totalPerdasFinanceiras += impacto;
-    totalItensPerdidos += qtd;
+  for (const r of rows) {
+    const qtd = round3(r.quantidade);
+    const impacto = round2(r.impacto_financeiro);
 
-    if (!porTipo[row.tipo_perda]) {
-      porTipo[row.tipo_perda] = { tipo: row.tipo_perda, quantidade: 0, impactoTotal: 0 };
+    totalItensPerdidos = round3(totalItensPerdidos + qtd);
+    impactoFinanceiroTotal = sumMoney(impactoFinanceiroTotal, impacto);
+
+    // Agrupamento por tipo de perda
+    const tipo = r.tipo_perda;
+    if (!porTipo[tipo]) {
+      porTipo[tipo] = { tipo, quantidade: 0, impactoTotal: 0, ocorrencias: 0 };
     }
-    porTipo[row.tipo_perda].quantidade += qtd;
-    porTipo[row.tipo_perda].impactoTotal = parseFloat((porTipo[row.tipo_perda].impactoTotal + impacto).toFixed(2));
+    porTipo[tipo].quantidade = round3(porTipo[tipo].quantidade + qtd);
+    porTipo[tipo].impactoTotal = sumMoney(porTipo[tipo].impactoTotal, impacto);
+    porTipo[tipo].ocorrencias += 1;
+
+    // Agrupamento por categoria
+    const cat = r.produto_categoria || 'Sem categoria';
+    if (!porCategoria[cat]) {
+      porCategoria[cat] = { categoria: cat, quantidade: 0, impactoTotal: 0, ocorrencias: 0 };
+    }
+    porCategoria[cat].quantidade = round3(porCategoria[cat].quantidade + qtd);
+    porCategoria[cat].impactoTotal = sumMoney(porCategoria[cat].impactoTotal, impacto);
+    porCategoria[cat].ocorrencias += 1;
   }
 
   return {
     totalRegistros: rows.length,
     totalPerdasRegistradas: rows.length,
-    totalPerdasFinanceiras: parseFloat(totalPerdasFinanceiras.toFixed(2)),
-    impactoFinanceiroTotal: parseFloat(totalPerdasFinanceiras.toFixed(2)),
-    totalItensPerdidos: parseFloat(totalItensPerdidos.toFixed(3)),
-    quantidadeItensPerdidos: parseFloat(totalItensPerdidos.toFixed(3)),
+    totalItensPerdidos,
+    quantidadeItensPerdidos: totalItensPerdidos,
+    impactoFinanceiroTotal,
+    totalPerdasFinanceiras: impactoFinanceiroTotal,
+    totaisPorTipo: Object.values(porTipo),
+    totaisPorCategoria: Object.values(porCategoria),
     resumoPorTipo: Object.values(porTipo),
-    detalhes: rows,
-    perdas: rows
+    perdas: rows,
+    detalhes: rows
   };
+}
+
+/**
+ * Relatório gerencial de perdas por período (mantido para compatibilidade retroativa)
+ */
+export async function fetchRelatorioPerdas(gerenteId, options = {}, dbOverride = null) {
+  return await fetchRelatorioPerdasAvariasDetalhado(gerenteId, options, dbOverride);
 }

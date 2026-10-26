@@ -9,10 +9,21 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
-  ActivityIndicator
+  ActivityIndicator,
+  Alert
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { fetchFormasPagamento, saveFormaPagamentoConfig } from '../services/paymentService';
+
+const getFormaIcon = (codigo, nome) => {
+  const c = String(codigo || nome || '').toLowerCase();
+  if (c.includes('dinheiro')) return { icon: 'cash-outline', bg: '#DEF7EC', color: '#03543F' };
+  if (c.includes('debito')) return { icon: 'card-outline', bg: '#EBF8FF', color: '#2B6CB0' };
+  if (c.includes('credito')) return { icon: 'card', bg: '#FAF5FF', color: '#6B46C1' };
+  if (c.includes('pix')) return { icon: 'flash-outline', bg: '#E6FFFA', color: '#234E52' };
+  if (c.includes('fiado') || c.includes('carne')) return { icon: 'document-text-outline', bg: '#FEEBC8', color: '#7B341E' };
+  return { icon: 'wallet-outline', bg: '#EDF2F7', color: '#4A5568' };
+};
 
 export default function PaymentTaxConfigModal({
   visible,
@@ -141,68 +152,98 @@ export default function PaymentTaxConfigModal({
           {/* Header padrão LucroCerto */}
           <View style={styles.header}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <Ionicons name="card" size={20} color="#FFF" />
-              <Text style={styles.headerTitle}>Taxas das Formas de Pagamento</Text>
+              <View style={styles.headerIconCircle}>
+                <Ionicons name="card" size={18} color="#1E63EC" />
+              </View>
+              <View>
+                <Text style={styles.headerTitle}>Taxas das Formas de Pagamento</Text>
+                <Text style={styles.headerSubtitle}>Configure tarifas fixas e percentuais por operadora</Text>
+              </View>
             </View>
-            <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
+            <TouchableOpacity onPress={onClose} style={styles.closeBtn} accessibilityLabel="Fechar">
               <Ionicons name="close" size={20} color="#FFF" />
             </TouchableOpacity>
           </View>
 
           <View style={styles.bodyContent}>
-            <Text style={styles.subtitle}>
-              Configure as taxas cobradas pelas maquininhas e meios de pagamento:
-            </Text>
-
             {loading ? (
-              <View style={{ padding: 30, alignItems: 'center' }}>
-                <ActivityIndicator color="#1E63EC" size="small" />
+              <View style={{ padding: 40, alignItems: 'center', justifyContent: 'center' }}>
+                <ActivityIndicator color="#1E63EC" size="large" />
+                <Text style={{ marginTop: 12, color: '#718096', fontSize: 13 }}>Carregando taxas...</Text>
               </View>
             ) : (
-              <ScrollView style={styles.body} keyboardShouldPersistTaps="handled">
+              <ScrollView style={styles.body} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
                 {formas.map((f) => {
                   const vals = taxasState[f.id] || { pct: '0', fix: '0' };
                   const isSaving = savingId === f.id;
+                  const iconMeta = getFormaIcon(f.codigo, f.nome);
 
                   return (
-                    <View key={f.id} style={styles.formaRow}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.formaNome}>{f.nome}</Text>
-                        <Text style={styles.formaOperadora}>Operadora: {f.operadora || 'Padrão'}</Text>
-                      </View>
-
-                      <View style={styles.inputsRow}>
-                        <View style={styles.inputCol}>
-                          <Text style={styles.inputMiniLabel}>Taxa %</Text>
-                          <TextInput
-                            style={styles.taxInput}
-                            keyboardType="numeric"
-                            value={vals.pct}
-                            onChangeText={(txt) => handleUpdateField(f.id, 'pct', txt)}
-                          />
-                        </View>
-
-                        <View style={styles.inputCol}>
-                          <Text style={styles.inputMiniLabel}>Fixa R$</Text>
-                          <TextInput
-                            style={styles.taxInput}
-                            keyboardType="numeric"
-                            value={vals.fix}
-                            onChangeText={(txt) => handleUpdateField(f.id, 'fix', txt)}
-                          />
+                    <View key={f.id} style={styles.formaCard}>
+                      {/* Linha 1: Identificação da Forma + Botão Salvar desta forma */}
+                      <View style={styles.formaCardHeader}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, gap: 10, marginRight: 8 }}>
+                          <View style={[styles.formaIconBox, { backgroundColor: iconMeta.bg }]}>
+                            <Ionicons name={iconMeta.icon} size={18} color={iconMeta.color} />
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.formaNome} numberOfLines={1}>{f.nome}</Text>
+                            <Text style={styles.formaOperadora}>Operadora: {f.operadora || 'Padrão'}</Text>
+                          </View>
                         </View>
 
                         <TouchableOpacity
-                          style={[styles.saveBtn, isSaving && { opacity: 0.6 }]}
+                          style={[styles.saveBtnCard, isSaving && { opacity: 0.6 }]}
                           onPress={() => handleSaveTaxa(f)}
                           disabled={isSaving}
+                          accessibilityLabel={`Salvar taxas de ${f.nome}`}
                         >
                           {isSaving ? (
-                            <ActivityIndicator size="small" color="#FFF" />
+                            <ActivityIndicator size="small" color="#1E63EC" />
                           ) : (
-                            <Ionicons name="checkmark" size={18} color="#FFF" />
+                            <>
+                              <Ionicons name="checkmark-done" size={15} color="#1E63EC" />
+                              <Text style={styles.saveBtnCardText}>Salvar</Text>
+                            </>
                           )}
                         </TouchableOpacity>
+                      </View>
+
+                      {/* Linha 2: Campos de Entrada Organizados (50% cada) */}
+                      <View style={styles.formaInputsRow}>
+                        <View style={styles.inputFieldWrapper}>
+                          <Text style={styles.fieldLabel}>Taxa Percentual</Text>
+                          <View style={styles.fieldInputGroup}>
+                            <TextInput
+                              style={styles.fieldInput}
+                              keyboardType="numeric"
+                              placeholder="0.00"
+                              placeholderTextColor="#A0AEC0"
+                              value={vals.pct}
+                              onChangeText={(txt) => handleUpdateField(f.id, 'pct', txt)}
+                            />
+                            <View style={styles.fieldSuffix}>
+                              <Text style={styles.fieldSuffixText}>%</Text>
+                            </View>
+                          </View>
+                        </View>
+
+                        <View style={styles.inputFieldWrapper}>
+                          <Text style={styles.fieldLabel}>Taxa Fixa</Text>
+                          <View style={styles.fieldInputGroup}>
+                            <View style={styles.fieldPrefix}>
+                              <Text style={styles.fieldPrefixText}>R$</Text>
+                            </View>
+                            <TextInput
+                              style={styles.fieldInput}
+                              keyboardType="numeric"
+                              placeholder="0.00"
+                              placeholderTextColor="#A0AEC0"
+                              value={vals.fix}
+                              onChangeText={(txt) => handleUpdateField(f.id, 'fix', txt)}
+                            />
+                          </View>
+                        </View>
                       </View>
                     </View>
                   );
@@ -223,7 +264,7 @@ export default function PaymentTaxConfigModal({
               <Text style={styles.closeBtnFooterText}>Cancelar</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.saveAllBtnFooter} onPress={handleSaveAllTaxas}>
-              <Ionicons name="save-outline" size={17} color="#FFF" style={{ marginRight: 6 }} />
+              <Ionicons name="save-outline" size={18} color="#FFF" style={{ marginRight: 6 }} />
               <Text style={styles.saveAllBtnFooterText}>Salvar Todas as Taxas</Text>
             </TouchableOpacity>
           </View>
@@ -236,15 +277,15 @@ export default function PaymentTaxConfigModal({
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 16
+    padding: 14
   },
   card: {
     width: '100%',
-    maxWidth: 440,
-    maxHeight: '90%',
+    maxWidth: 460,
+    maxHeight: '92%',
     backgroundColor: '#FFFFFF',
     borderRadius: 16,
     overflow: 'hidden',
@@ -259,87 +300,169 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 20,
+    paddingHorizontal: 16,
     paddingVertical: 14
   },
+  headerIconCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center'
+  },
   headerTitle: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: 'bold',
     color: '#FFFFFF'
+  },
+  headerSubtitle: {
+    fontSize: 10.5,
+    color: 'rgba(255, 255, 255, 0.8)',
+    marginTop: 1
   },
   closeBtn: {
     backgroundColor: 'rgba(255, 255, 255, 0.2)',
     borderRadius: 14,
-    width: 28,
-    height: 28,
+    width: 30,
+    height: 30,
     justifyContent: 'center',
     alignItems: 'center'
   },
   bodyContent: {
-    padding: 16
-  },
-  subtitle: {
-    fontSize: 12,
-    color: '#718096',
-    marginBottom: 14,
-    lineHeight: 16
+    padding: 14
   },
   body: {
     maxHeight: 460
   },
-  formaRow: {
-    backgroundColor: '#F7FAFC',
-    borderRadius: 10,
+  formaCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
     padding: 12,
-    marginBottom: 8,
+    marginBottom: 10,
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    flexDirection: 'row',
-    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 2,
+    elevation: 1,
     gap: 10
   },
+  formaCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center'
+  },
+  formaIconBox: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center'
+  },
   formaNome: {
-    color: '#2D3748',
-    fontSize: 13,
+    color: '#1A202C',
+    fontSize: 13.5,
     fontWeight: 'bold'
   },
   formaOperadora: {
     color: '#718096',
     fontSize: 11,
-    marginTop: 2
+    marginTop: 1
   },
-  inputsRow: {
+  activePill: {
+    backgroundColor: '#DEF7EC',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 12
+  },
+  activePillText: {
+    color: '#03543F',
+    fontSize: 10,
+    fontWeight: 'bold'
+  },
+  formaInputsRow: {
     flexDirection: 'row',
     alignItems: 'flex-end',
-    gap: 6
+    gap: 8,
+    backgroundColor: '#F8FAFC',
+    padding: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#EDF2F7'
   },
-  inputCol: {
-    alignItems: 'center'
+  inputFieldWrapper: {
+    flex: 1
   },
-  inputMiniLabel: {
-    color: '#718096',
+  fieldLabel: {
     fontSize: 10,
+    color: '#718096',
     fontWeight: '600',
-    marginBottom: 3
+    marginBottom: 4
   },
-  taxInput: {
-    width: 58,
-    height: 36,
+  fieldInputGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: '#FFFFFF',
     borderRadius: 6,
     borderWidth: 1,
     borderColor: '#CBD5E1',
-    color: '#2D3748',
-    fontSize: 12,
-    textAlign: 'center'
-  },
-  saveBtn: {
-    width: 36,
     height: 36,
-    backgroundColor: '#1E63EC',
-    borderRadius: 6,
+    overflow: 'hidden'
+  },
+  fieldInput: {
+    flex: 1,
+    height: '100%',
+    paddingHorizontal: 8,
+    fontSize: 12.5,
+    color: '#1A202C',
+    fontWeight: 'bold'
+  },
+  fieldSuffix: {
+    backgroundColor: '#EDF2F7',
+    paddingHorizontal: 8,
+    height: '100%',
     justifyContent: 'center',
-    alignItems: 'center'
+    alignItems: 'center',
+    borderLeftWidth: 1,
+    borderLeftColor: '#CBD5E1'
+  },
+  fieldSuffixText: {
+    fontSize: 11,
+    fontWeight: 'bold',
+    color: '#4A5568'
+  },
+  fieldPrefix: {
+    backgroundColor: '#EDF2F7',
+    paddingHorizontal: 8,
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRightWidth: 1,
+    borderRightColor: '#CBD5E1'
+  },
+  fieldPrefixText: {
+    fontSize: 11,
+    fontWeight: 'bold',
+    color: '#4A5568'
+  },
+  saveBtnCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#EBF8FF',
+    borderWidth: 1,
+    borderColor: '#BEE3F8',
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 8,
+    flexShrink: 0,
+  },
+  saveBtnCardText: {
+    color: '#1E63EC',
+    fontSize: 11.5,
+    fontWeight: 'bold',
   },
   errorBox: {
     flexDirection: 'row',
@@ -362,12 +485,12 @@ const styles = StyleSheet.create({
     gap: 10,
     borderTopWidth: 1,
     borderTopColor: '#E2E8F0',
-    padding: 16,
+    padding: 14,
     backgroundColor: '#FFFFFF'
   },
   closeBtnFooter: {
     flex: 1,
-    height: 48,
+    height: 44,
     borderRadius: 8,
     backgroundColor: '#EDF2F7',
     justifyContent: 'center',
@@ -376,11 +499,11 @@ const styles = StyleSheet.create({
   closeBtnFooterText: {
     color: '#4A5568',
     fontWeight: 'bold',
-    fontSize: 14
+    fontSize: 13.5
   },
   saveAllBtnFooter: {
     flex: 2,
-    height: 48,
+    height: 44,
     borderRadius: 8,
     backgroundColor: '#1E63EC',
     flexDirection: 'row',
@@ -390,6 +513,6 @@ const styles = StyleSheet.create({
   saveAllBtnFooterText: {
     color: '#FFFFFF',
     fontWeight: 'bold',
-    fontSize: 14
+    fontSize: 13.5
   }
 });

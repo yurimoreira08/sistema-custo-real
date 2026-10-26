@@ -42,7 +42,7 @@ const CATEGORIAS = ['Laticínios', 'Mercearia', 'Bebidas', 'Higiene', 'Limpeza',
   const [showFormCategoryDropdown, setShowFormCategoryDropdown] = useState(false);
   const [scannerVisible, setScannerVisible] = useState(false);
 
-  // Modais de Zé Neto (S02, S03, S04)
+  // Modais de Gestão de Estoque e Fornecedores
   const [receivingModalVisible, setReceivingModalVisible] = useState(false);
   const [lossModalVisible, setLossModalVisible] = useState(false);
   const [kardexModalVisible, setKardexModalVisible] = useState(false);
@@ -296,56 +296,69 @@ const CATEGORIAS = ['Laticínios', 'Mercearia', 'Bebidas', 'Higiene', 'Limpeza',
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <StatusBar style="light" />
       
+      {/* Header Compacto e Responsivo */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <Image source={require('../../assets/logo_lucrocerto.png')} style={styles.headerLogo} />
-          <Text style={styles.headerTitle} numberOfLines={1}>LucroCerto</Text>
+          <View style={styles.headerTitleCol}>
+            <Text style={styles.headerTitle} numberOfLines={1}>LucroCerto</Text>
+            <Text style={styles.headerSubtitle} numberOfLines={1}>Estoque & Catálogo</Text>
+          </View>
         </View>
-        <View style={styles.headerRightGroup}>
+        <View style={styles.headerRight}>
           <SyncBadge />
-          <TouchableOpacity style={styles.logoutBtn} onPress={logout}>
+          <TouchableOpacity style={styles.logoutBtn} onPress={logout} accessibilityLabel="Sair da Conta">
+            <Ionicons name="log-out-outline" size={15} color="#FFFFFF" style={{ marginRight: 3 }} />
             <Text style={styles.logoutText}>Sair</Text>
           </TouchableOpacity>
         </View>
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContainer} keyboardShouldPersistTaps="handled">
+        {/* Cabeçalho da Seção com Botão Novo */}
         <View style={styles.titleRow}>
-          <View>
+          <View style={styles.titleCol}>
             <Text style={styles.mainTitle}>Produtos</Text>
-            <Text style={styles.subtitle}>Gerencie o estoque do mercado</Text>
+            <Text style={styles.subtitle}>Gerencie o catálogo e estoque de mercadorias</Text>
           </View>
-          <TouchableOpacity style={styles.topAddBtn} onPress={openAddModal}>
-            <Text style={topAddBtnText => styles.topAddBtnText}>+ Novo</Text>
+          <TouchableOpacity style={styles.topAddBtn} onPress={openAddModal} activeOpacity={0.8}>
+            <Ionicons name="add" size={18} color="#FFF" style={{ marginRight: 4 }} />
+            <Text style={styles.topAddBtnText}>Novo</Text>
           </TouchableOpacity>
         </View>
 
-        {/* Barra de Ações Rápidas de Estoque Harmonizada */}
-        <View style={styles.quickActionsContainer}>
+        {/* Grid 2x2 de Ações Rápidas de Estoque */}
+        <View style={styles.quickActionsGrid}>
           <TouchableOpacity 
-            style={styles.quickActionBtn}
+            style={styles.quickActionCard}
             onPress={() => setReceivingModalVisible(true)}
             activeOpacity={0.7}
           >
             <View style={[styles.quickActionIconBg, { backgroundColor: '#DEF7EC' }]}>
-              <Ionicons name="archive-outline" size={17} color="#03543F" />
+              <Ionicons name="archive-outline" size={18} color="#03543F" />
             </View>
-            <Text style={styles.quickActionText}>Entrada (PMP)</Text>
+            <View style={styles.quickActionTextContainer}>
+              <Text style={styles.quickActionTitle}>Entrada (PMP)</Text>
+              <Text style={styles.quickActionDesc}>Compras e custos</Text>
+            </View>
           </TouchableOpacity>
 
           <TouchableOpacity 
-            style={styles.quickActionBtn}
+            style={styles.quickActionCard}
             onPress={() => setLossModalVisible(true)}
             activeOpacity={0.7}
           >
             <View style={[styles.quickActionIconBg, { backgroundColor: '#FDE8E8' }]}>
-              <Ionicons name="alert-circle-outline" size={17} color="#9B1C1C" />
+              <Ionicons name="alert-circle-outline" size={18} color="#9B1C1C" />
             </View>
-            <Text style={styles.quickActionText}>Baixa Perda</Text>
+            <View style={styles.quickActionTextContainer}>
+              <Text style={styles.quickActionTitle}>Baixa Perda</Text>
+              <Text style={styles.quickActionDesc}>Avarias e perdas</Text>
+            </View>
           </TouchableOpacity>
 
           <TouchableOpacity 
-            style={styles.quickActionBtn}
+            style={styles.quickActionCard}
             onPress={() => {
               setSelectedKardexProduct(null);
               setKardexModalVisible(true);
@@ -353,103 +366,192 @@ const CATEGORIAS = ['Laticínios', 'Mercearia', 'Bebidas', 'Higiene', 'Limpeza',
             activeOpacity={0.7}
           >
             <View style={[styles.quickActionIconBg, { backgroundColor: '#EBF8FF' }]}>
-              <Ionicons name="list-outline" size={17} color="#2B6CB0" />
+              <Ionicons name="list-outline" size={18} color="#2B6CB0" />
             </View>
-            <Text style={styles.quickActionText}>Kardex Geral</Text>
+            <View style={styles.quickActionTextContainer}>
+              <Text style={styles.quickActionTitle}>Kardex Geral</Text>
+              <Text style={styles.quickActionDesc}>Movimentações</Text>
+            </View>
           </TouchableOpacity>
 
           <TouchableOpacity 
-            style={styles.quickActionBtn}
+            style={styles.quickActionCard}
             onPress={() => setSuppliersModalVisible(true)}
             activeOpacity={0.7}
           >
             <View style={[styles.quickActionIconBg, { backgroundColor: '#FEF3C7' }]}>
-              <Ionicons name="business-outline" size={17} color="#92400E" />
+              <Ionicons name="business-outline" size={18} color="#92400E" />
             </View>
-            <Text style={styles.quickActionText}>Fornecedores</Text>
+            <View style={styles.quickActionTextContainer}>
+              <Text style={styles.quickActionTitle}>Fornecedores</Text>
+              <Text style={styles.quickActionDesc}>Parceiros comerciais</Text>
+            </View>
           </TouchableOpacity>
         </View>
 
+        {/* Resumo de Indicadores de Estoque com Ícones Vetoriais */}
         <View style={styles.summaryRow}>
           <View style={styles.summaryCard}>
-            <Text style={styles.summaryEmoji}>📦</Text>
+            <View style={[styles.summaryIconBadge, { backgroundColor: '#EFF6FF' }]}>
+              <Ionicons name="cube-outline" size={18} color="#1E63EC" />
+            </View>
             <Text style={styles.summaryNumber}>{totalProdutos}</Text>
-            <Text style={styles.summaryLabel}>Total de Produtos</Text>
+            <Text style={styles.summaryLabel}>Total de Itens</Text>
           </View>
           <View style={styles.summaryCard}>
-            <Text style={styles.summaryEmoji}>✅</Text>
+            <View style={[styles.summaryIconBadge, { backgroundColor: '#F0FDF4' }]}>
+              <Ionicons name="checkmark-circle-outline" size={18} color="#16A34A" />
+            </View>
             <Text style={styles.summaryNumber}>{estoqueNormal}</Text>
-            <Text style={styles.summaryLabel}>Em Estoque Normal</Text>
+            <Text style={styles.summaryLabel}>Estoque Normal</Text>
           </View>
           <View style={styles.summaryCard}>
-            <Text style={styles.summaryEmoji}>⚠️</Text>
-            <Text style={[styles.summaryNumber, estoqueBaixo > 0 && { color: '#E53E3E' }]}>{estoqueBaixo}</Text>
+            <View style={[styles.summaryIconBadge, { backgroundColor: estoqueBaixo > 0 ? '#FEF2F2' : '#F8FAFC' }]}>
+              <Ionicons 
+                name="alert-circle-outline" 
+                size={18} 
+                color={estoqueBaixo > 0 ? '#DC2626' : '#94A3B8'} 
+              />
+            </View>
+            <Text style={[styles.summaryNumber, estoqueBaixo > 0 && { color: '#DC2626' }]}>
+              {estoqueBaixo}
+            </Text>
             <Text style={styles.summaryLabel}>Estoque Baixo</Text>
           </View>
         </View>
 
+        {/* Barra de Pesquisa com Botão de Limpar */}
         <View style={styles.searchWrapper}>
-          <Ionicons name="search" size={20} color="#A0AEC0" style={styles.searchIcon} />
+          <Ionicons name="search" size={18} color="#94A3B8" style={styles.searchIcon} />
           <TextInput
             style={styles.searchInput}
-            placeholder="Buscar produto..."
-            placeholderTextColor="#A0AEC0"
+            placeholder="Buscar por produto, marca ou código..."
+            placeholderTextColor="#94A3B8"
             value={search}
             onChangeText={setSearch}
           />
+          {search.length > 0 && (
+            <TouchableOpacity onPress={() => setSearch('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Ionicons name="close-circle" size={18} color="#94A3B8" />
+            </TouchableOpacity>
+          )}
         </View>
 
-        <View style={styles.dropdownContainer}>
-          <TouchableOpacity 
-            style={styles.dropdownSelector} 
-            onPress={() => setShowCategoryDropdown(!showCategoryDropdown)}
+        {/* Chips de Categoria com Rolagem Horizontal Suave */}
+        <ScrollView 
+          horizontal 
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.categoryChipsContainer}
+        >
+          <TouchableOpacity
+            style={[
+              styles.categoryChip,
+              selectedCategory === 'Todas as categorias' && styles.categoryChipActive
+            ]}
+            onPress={() => selectCategoryFilter('Todas as categorias')}
+            activeOpacity={0.7}
           >
-            <Text style={styles.dropdownSelectorText}>{selectedCategory}</Text>
-            <Ionicons name="chevron-down" size={18} color="#4A5568" />
+            <Text style={[
+              styles.categoryChipText,
+              selectedCategory === 'Todas as categorias' && styles.categoryChipTextActive
+            ]}>
+              Todas
+            </Text>
           </TouchableOpacity>
-
-          {showCategoryDropdown && (
-            <View style={styles.dropdownOptions}>
-              <TouchableOpacity 
-                style={styles.dropdownOptionItem} 
-                onPress={() => selectCategoryFilter('Todas as categorias')}
+          {CATEGORIAS.map((cat, idx) => {
+            const isActive = selectedCategory === cat;
+            return (
+              <TouchableOpacity
+                key={idx.toString()}
+                style={[styles.categoryChip, isActive && styles.categoryChipActive]}
+                onPress={() => selectCategoryFilter(cat)}
+                activeOpacity={0.7}
               >
-                <Text style={styles.dropdownOptionText}>Todas as categorias</Text>
+                <Text style={[styles.categoryChipText, isActive && styles.categoryChipTextActive]}>
+                  {cat}
+                </Text>
               </TouchableOpacity>
-              {CATEGORIAS.map((cat, idx) => (
-                <TouchableOpacity 
-                  key={idx.toString()} 
-                  style={styles.dropdownOptionItem} 
-                  onPress={() => selectCategoryFilter(cat)}
-                >
-                  <Text style={styles.dropdownOptionText}>{cat}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+            );
+          })}
+        </ScrollView>
+
+        {/* Barra Informativa de Itens Filtrados */}
+        <View style={styles.filterMetaRow}>
+          <Text style={styles.filterMetaText}>
+            Mostrando <Text style={{ fontWeight: 'bold', color: '#1E293B' }}>{filteredProducts.length}</Text> de {totalProdutos} produtos
+          </Text>
+          {(search.length > 0 || selectedCategory !== 'Todas as categorias') && (
+            <TouchableOpacity 
+              onPress={() => {
+                setSearch('');
+                setSelectedCategory('Todas as categorias');
+              }}
+              hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+            >
+              <Text style={styles.clearFiltersText}>Limpar filtros</Text>
+            </TouchableOpacity>
           )}
         </View>
 
         {filteredProducts.length === 0 ? (
           <View style={styles.emptyContainer}>
+            <Ionicons name="cube-outline" size={48} color="#CBD5E1" style={{ marginBottom: 8 }} />
             <Text style={styles.emptyText}>Nenhum produto encontrado.</Text>
+            <Text style={styles.emptySubtext}>Verifique os termos da busca ou filtre por outra categoria.</Text>
           </View>
         ) : (
           <View style={styles.listContainer}>
             {filteredProducts.map((item) => {
               const isLowStock = item.estoque <= item.estoque_minimo;
+              const precoVendaNum = Number(item.preco_venda || 0);
+              const precoCustoNum = Number(item.preco_custo || 0);
+              const margemPct = precoVendaNum > 0
+                ? (((precoVendaNum - precoCustoNum) / precoVendaNum) * 100).toFixed(0)
+                : 0;
+
               return (
                 <View key={item.id.toString()} style={styles.productCard}>
+                  {/* Cabeçalho do Card */}
                   <View style={styles.cardHeaderRow}>
-                    <Text style={styles.productName}>{item.nome}</Text>
+                    <Text style={styles.productName} numberOfLines={2}>{item.nome}</Text>
                     <View style={styles.codeTag}>
-                      <Text style={styles.codeTagText}>#{item.codigo_barras || 'N/D'}</Text>
+                      <Text style={styles.codeTagText}>#{item.codigo_barras || 'S/CÓD'}</Text>
                     </View>
                   </View>
 
-                  <View style={styles.categoryBadge}>
-                    <Text style={styles.categoryBadgeText}>{item.categoria || 'Outros'}</Text>
+                  {/* Metadados: Categoria, Marca e Status de Estoque */}
+                  <View style={styles.cardMetaRow}>
+                    <View style={styles.cardTagsLeft}>
+                      <View style={styles.categoryBadge}>
+                        <Text style={styles.categoryBadgeText}>{item.categoria || 'Outros'}</Text>
+                      </View>
+                      {Boolean(item.marca) && (
+                        <View style={styles.brandBadge}>
+                          <Text style={styles.brandBadgeText}>🏷️ {item.marca}</Text>
+                        </View>
+                      )}
+                    </View>
+
+                    <View style={[
+                      styles.stockStatusBadge,
+                      isLowStock ? styles.stockStatusBadgeLow : styles.stockStatusBadgeNormal
+                    ]}>
+                      <Ionicons 
+                        name={isLowStock ? 'alert-circle' : 'checkmark-circle'} 
+                        size={13} 
+                        color={isLowStock ? '#DC2626' : '#16A34A'} 
+                        style={{ marginRight: 3 }}
+                      />
+                      <Text style={[
+                        styles.stockStatusText,
+                        isLowStock ? styles.stockStatusTextLow : styles.stockStatusTextNormal
+                      ]}>
+                        {isLowStock ? 'Estoque Baixo' : 'Normal'}
+                      </Text>
+                    </View>
                   </View>
 
+                  {/* Grade de Indicadores Financeiros e Estoque */}
                   <View style={styles.valuesGrid}>
                     <View style={styles.gridCol}>
                       <Text style={styles.gridLabel}>CUSTO</Text>
@@ -458,6 +560,15 @@ const CATEGORIAS = ['Laticínios', 'Mercearia', 'Bebidas', 'Higiene', 'Limpeza',
                     <View style={styles.gridCol}>
                       <Text style={styles.gridLabel}>VENDA</Text>
                       <Text style={styles.gridValue}>{formatCurrency(item.preco_venda)}</Text>
+                    </View>
+                    <View style={styles.gridCol}>
+                      <Text style={styles.gridLabel}>MARGEM</Text>
+                      <Text style={[
+                        styles.gridValue, 
+                        margemPct >= 20 ? styles.marginHealthyText : styles.marginTightText
+                      ]}>
+                        {margemPct}%
+                      </Text>
                     </View>
                     <View style={styles.gridCol}>
                       <Text style={styles.gridLabel}>ESTOQUE</Text>
@@ -470,6 +581,7 @@ const CATEGORIAS = ['Laticínios', 'Mercearia', 'Bebidas', 'Higiene', 'Limpeza',
                     </View>
                   </View>
 
+                  {/* Ações do Card */}
                   <View style={styles.btnActionsRow}>
                     <TouchableOpacity 
                       style={styles.kardexCardBtn} 
@@ -479,12 +591,16 @@ const CATEGORIAS = ['Laticínios', 'Mercearia', 'Bebidas', 'Higiene', 'Limpeza',
                       }}
                       activeOpacity={0.7}
                     >
-                      <Ionicons name="list-outline" size={15} color="#4A5568" style={{ marginRight: 4 }} />
+                      <Ionicons name="time-outline" size={15} color="#475569" style={{ marginRight: 4 }} />
                       <Text style={styles.kardexCardBtnText}>Kardex</Text>
                     </TouchableOpacity>
 
-                    <TouchableOpacity style={styles.editCardBtn} onPress={() => openEditModal(item)} activeOpacity={0.7}>
-                      <Ionicons name="pencil" size={15} color="#2B6CB0" style={{ marginRight: 4 }} />
+                    <TouchableOpacity 
+                      style={styles.editCardBtn} 
+                      onPress={() => openEditModal(item)} 
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons name="pencil" size={14} color="#1D4ED8" style={{ marginRight: 4 }} />
                       <Text style={styles.editCardBtnText}>Editar</Text>
                     </TouchableOpacity>
 
@@ -493,7 +609,7 @@ const CATEGORIAS = ['Laticínios', 'Mercearia', 'Bebidas', 'Higiene', 'Limpeza',
                       onPress={() => handleDelete(item.id, item.nome)}
                       activeOpacity={0.7}
                     >
-                      <Ionicons name="trash" size={15} color="#C53030" style={{ marginRight: 4 }} />
+                      <Ionicons name="trash-outline" size={15} color="#DC2626" style={{ marginRight: 4 }} />
                       <Text style={styles.deleteCardBtnText}>Excluir</Text>
                     </TouchableOpacity>
                   </View>
@@ -817,86 +933,154 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
   },
   headerLeft: {
-    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
+    flexShrink: 1,
+    marginRight: 8,
   },
   headerLogo: {
-    width: 36,
-    height: 36,
+    width: 32,
+    height: 32,
     borderRadius: 8,
-    marginRight: 10,
+    marginRight: 8,
     backgroundColor: '#FFFFFF',
-    padding: 3,
+    padding: 2,
+    flexShrink: 0,
   },
-  headerTitle: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    color: '#FFF',
+  headerTitleCol: {
+    justifyContent: 'center',
     flexShrink: 1,
   },
+  headerTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#FFF',
+    letterSpacing: -0.3,
+  },
+  headerSubtitle: {
+    fontSize: 10,
+    color: '#DCE7FE',
+    fontWeight: '500',
+    marginTop: -2,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexShrink: 0,
+  },
   logoutBtn: {
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    paddingHorizontal: 16,
-    paddingVertical: 6,
+    backgroundColor: '#EF4444',
+    height: 34,
+    paddingHorizontal: 9,
     borderRadius: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   logoutText: {
     color: '#FFF',
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: 'bold',
   },
-  headerRightGroup: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
   scrollContainer: {
-    backgroundColor: '#F0F4F8',
+    backgroundColor: '#F8FAFC',
     padding: 16,
-    paddingBottom: 80,
+    paddingBottom: 85,
     flexGrow: 1,
   },
   titleRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 20,
+    marginBottom: 16,
+  },
+  titleCol: {
+    flex: 1,
+    marginRight: 10,
   },
   mainTitle: {
     fontSize: 22,
-    fontWeight: 'bold',
-    color: '#2D3748',
+    fontWeight: '800',
+    color: '#0F172A',
+    letterSpacing: -0.5,
   },
   subtitle: {
-    fontSize: 13,
-    color: '#718096',
+    fontSize: 12,
+    color: '#64748B',
     marginTop: 2,
   },
   topAddBtn: {
     backgroundColor: '#1E63EC',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    height: 36,
     borderRadius: 8,
+    elevation: 2,
     shadowColor: '#1E63EC',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-    elevation: 3,
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
   },
   topAddBtnText: {
     color: '#FFF',
-    fontSize: 14,
-    fontWeight: 'bold',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  quickActionsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 16,
+  },
+  quickActionCard: {
+    flexBasis: '48.5%',
+    flexGrow: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    elevation: 1,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+  },
+  quickActionIconBg: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 8,
+    flexShrink: 0,
+  },
+  quickActionTextContainer: {
+    flex: 1,
+  },
+  quickActionTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  quickActionDesc: {
+    fontSize: 10,
+    color: '#64748B',
+    marginTop: 1,
   },
   summaryRow: {
     flexDirection: 'row',
     gap: 8,
-    marginBottom: 20,
+    marginBottom: 16,
   },
   summaryCard: {
     flex: 1,
@@ -907,24 +1091,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 1,
     borderColor: '#E2E8F0',
+    elevation: 1,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
+    shadowOpacity: 0.04,
     shadowRadius: 2,
-    elevation: 1,
   },
-  summaryEmoji: {
-    fontSize: 20,
+  summaryIconBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
     marginBottom: 4,
   },
   summaryNumber: {
     fontSize: 18,
-    fontWeight: 'bold',
-    color: '#2D3748',
+    fontWeight: '800',
+    color: '#0F172A',
   },
   summaryLabel: {
-    fontSize: 9,
-    color: '#A0AEC0',
+    fontSize: 10,
+    color: '#64748B',
     marginTop: 2,
     fontWeight: '600',
     textAlign: 'center',
@@ -933,191 +1121,233 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#FFFFFF',
-    borderRadius: 8,
+    borderRadius: 10,
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    paddingHorizontal: 14,
-    height: 48,
-    marginBottom: 12,
+    paddingHorizontal: 12,
+    height: 44,
+    marginBottom: 10,
   },
   searchIcon: {
     marginRight: 8,
   },
   searchInput: {
     flex: 1,
-    color: '#2D3748',
-    fontSize: 15,
+    color: '#0F172A',
+    fontSize: 14,
+    paddingVertical: 0,
   },
-  dropdownContainer: {
-    position: 'relative',
-    zIndex: 10,
-    marginBottom: 16,
+  categoryChipsContainer: {
+    flexDirection: 'row',
+    gap: 6,
+    paddingBottom: 10,
   },
-  dropdownSelector: {
+  categoryChip: {
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  categoryChipActive: {
+    backgroundColor: '#1E63EC',
+    borderColor: '#1E63EC',
+  },
+  categoryChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#475569',
+  },
+  categoryChipTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+  },
+  filterMetaRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    paddingHorizontal: 14,
-    height: 48,
+    marginBottom: 12,
+    paddingHorizontal: 2,
   },
-  dropdownSelectorText: {
-    color: '#4A5568',
-    fontSize: 15,
-    fontWeight: '500',
+  filterMetaText: {
+    fontSize: 12,
+    color: '#64748B',
   },
-  dropdownOptions: {
-    position: 'absolute',
-    top: 50,
-    left: 0,
-    right: 0,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 6,
-    elevation: 5,
-    zIndex: 20,
-  },
-  dropdownOptionItem: {
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderBottomWidth: 0.5,
-    borderBottomColor: '#EDF2F7',
-  },
-  dropdownOptionText: {
-    color: '#4A5568',
-    fontSize: 14,
+  clearFiltersText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#1E63EC',
   },
   emptyContainer: {
-    padding: 32,
+    padding: 36,
     alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
   },
   emptyText: {
-    color: '#718096',
+    color: '#0F172A',
     fontSize: 15,
+    fontWeight: '700',
+  },
+  emptySubtext: {
+    color: '#94A3B8',
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 4,
   },
   listContainer: {
     gap: 12,
   },
   productCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  cardHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-  },
-  productName: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#2D3748',
-    flex: 1,
-    marginRight: 8,
-  },
-  codeTag: {
-    backgroundColor: '#EDF2F7',
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-  },
-  codeTagText: {
-    fontSize: 11,
-    fontWeight: 'bold',
-    color: '#718096',
-  },
-  categoryBadge: {
-    backgroundColor: '#FEFCBF', // Fundo amarelo clarinho igual à imagem
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    alignSelf: 'flex-start',
-    marginTop: 6,
-    marginBottom: 12,
-  },
-  categoryBadgeText: {
-    color: '#B7791F', // Texto laranja amarelado
-    fontSize: 11,
-    fontWeight: 'bold',
-  },
-  valuesGrid: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#EDF2F7',
-    marginBottom: 12,
-  },
-  gridCol: {
-    alignItems: 'flex-start',
-  },
-  gridLabel: {
-    fontSize: 9,
-    fontWeight: 'bold',
-    color: '#A0AEC0',
-    letterSpacing: 0.5,
-    marginBottom: 4,
-  },
-  gridValue: {
-    fontSize: 14,
-    fontWeight: 'bold',
-    color: '#2D3748',
-  },
-  stockNormalText: {
-    color: '#2F855A', // Verde se estoque normal
-  },
-  stockLowText: {
-    color: '#C53030', // Vermelho se estoque crítico
-  },
-  quickActionsContainer: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 16,
-  },
-  quickActionBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 8,
+    borderRadius: 14,
+    padding: 14,
     borderWidth: 1,
     borderColor: '#E2E8F0',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.05,
-    shadowRadius: 2,
+    shadowRadius: 3,
     elevation: 1,
   },
-  quickActionIconBg: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 6,
+  cardHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 6,
   },
-  quickActionText: {
+  productName: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#0F172A',
+    flex: 1,
+    marginRight: 8,
+    lineHeight: 20,
+  },
+  codeTag: {
+    backgroundColor: '#F1F5F9',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  codeTagText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#64748B',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  cardMetaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  cardTagsLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexWrap: 'wrap',
+    flex: 1,
+    marginRight: 8,
+  },
+  categoryBadge: {
+    backgroundColor: '#FEF9C3',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderWidth: 1,
+    borderColor: '#FEF08A',
+  },
+  categoryBadgeText: {
+    color: '#854D0E',
     fontSize: 11,
-    fontWeight: 'bold',
-    color: '#2D3748',
-    flexShrink: 1,
+    fontWeight: '700',
+  },
+  brandBadge: {
+    backgroundColor: '#F1F5F9',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  brandBadgeText: {
+    color: '#475569',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  stockStatusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+  },
+  stockStatusBadgeNormal: {
+    backgroundColor: '#F0FDF4',
+    borderColor: '#BBF7D0',
+  },
+  stockStatusBadgeLow: {
+    backgroundColor: '#FEF2F2',
+    borderColor: '#FECACA',
+  },
+  stockStatusText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  stockStatusTextNormal: {
+    color: '#16A34A',
+  },
+  stockStatusTextLow: {
+    color: '#DC2626',
+  },
+  valuesGrid: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    backgroundColor: '#F8FAFC',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginBottom: 12,
+  },
+  gridCol: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  gridLabel: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#94A3B8',
+    letterSpacing: 0.5,
+    marginBottom: 2,
+  },
+  gridValue: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  marginHealthyText: {
+    color: '#16A34A',
+  },
+  marginTightText: {
+    color: '#D97706',
+  },
+  stockNormalText: {
+    color: '#16A34A',
+  },
+  stockLowText: {
+    color: '#DC2626',
   },
   btnActionsRow: {
     flexDirection: 'row',
@@ -1126,44 +1356,50 @@ const styles = StyleSheet.create({
   kardexCardBtn: {
     flex: 1,
     flexDirection: 'row',
-    backgroundColor: '#EDF2F7',
+    backgroundColor: '#F1F5F9',
     borderRadius: 8,
-    height: 40,
+    height: 38,
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
   },
   kardexCardBtnText: {
-    color: '#4A5568',
-    fontSize: 13,
-    fontWeight: 'bold',
+    color: '#334155',
+    fontSize: 12,
+    fontWeight: '700',
   },
   editCardBtn: {
     flex: 1,
     flexDirection: 'row',
-    backgroundColor: '#EBF8FF', // Azul claro idêntico à imagem
+    backgroundColor: '#EFF6FF',
     borderRadius: 8,
-    height: 40,
+    height: 38,
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
   },
   editCardBtnText: {
-    color: '#2B6CB0', // Texto azul royal
-    fontSize: 13,
-    fontWeight: 'bold',
+    color: '#1D4ED8',
+    fontSize: 12,
+    fontWeight: '700',
   },
   deleteCardBtn: {
     flex: 1,
     flexDirection: 'row',
-    backgroundColor: '#FFF5F5', // Vermelho claro idêntico à imagem
+    backgroundColor: '#FEF2F2',
     borderRadius: 8,
-    height: 40,
+    height: 38,
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#FECACA',
   },
   deleteCardBtnText: {
-    color: '#C53030', // Texto vermelho
-    fontSize: 13,
-    fontWeight: 'bold',
+    color: '#DC2626',
+    fontSize: 12,
+    fontWeight: '700',
   },
   fabBtn: {
     position: 'absolute',

@@ -1,9 +1,19 @@
 import { getDb } from '../database/dbInstance';
 import { syncOrEnqueue } from '../database/syncService';
 import { debitarFiado, estornarFiado, validateLimiteFiado } from './clientService';
+import { 
+  round2, 
+  toCents, 
+  fromCents, 
+  sumMoney, 
+  subtractMoney, 
+  calcularTaxaMonetaria, 
+  validarIgualdadeMonetaria, 
+  calcularProporcional 
+} from '../utils/money';
 
 // ========================================================
-// SERVIÇO DE PAGAMENTOS, TAXAS E LUCRO REAL (S01 A S04)
+// SERVIÇO DE PAGAMENTOS, TAXAS, AUDITORIA CONTÁBIL E LUCRO REAL (S01 A S05)
 // Integrante: Francisco Yuri da Silva Mauriz
 // ========================================================
 
@@ -116,39 +126,20 @@ export async function saveFormaPagamentoConfig(config, gerenteId, dbOverride = n
 }
 
 /**
- * Calcula taxa e valor líquido com precisão de 2 casas decimais
+ * Calcula taxa e valor líquido com precisão monetária estrita de 2 casas decimais (S05)
  */
 export function calcularTaxaPagamento(valorBruto, taxaPercentual = 0, taxaFixa = 0) {
-  const bruto = parseFloat(valorBruto) || 0;
-  const pct = parseFloat(taxaPercentual) || 0;
-  const fix = parseFloat(taxaFixa) || 0;
-
-  if (bruto <= 0) {
-    return { valorBruto: 0, valorTaxa: 0, valorLiquido: 0 };
-  }
-
-  const taxaVariavel = bruto * (pct / 100);
-  const taxaTotal = parseFloat((taxaVariavel + fix).toFixed(2));
-  const valorLiquido = parseFloat(Math.max(0, bruto - taxaTotal).toFixed(2));
-
-  return {
-    valorBruto: parseFloat(bruto.toFixed(2)),
-    taxaPercentual: pct,
-    taxaFixa: fix,
-    valorTaxa: taxaTotal,
-    valorLiquido: valorLiquido
-  };
+  return calcularTaxaMonetaria(valorBruto, taxaPercentual, taxaFixa);
 }
 
 /**
- * Valida o conjunto de pagamentos de uma venda (S03 - Processamento Misto)
+ * Valida o conjunto de pagamentos de uma venda (S03 / S05 - Processamento Misto e Auditoria Decimal)
  */
 export async function validarPagamentosMistos(pagamentos, valorTotalVenda, clienteId, gerenteId, dbOverride = null) {
   if (!Array.isArray(pagamentos) || pagamentos.length === 0) {
     throw new Error('Nenhuma forma de pagamento foi informada.');
   }
 
-  let totalPago = 0;
   const pagamentosValidados = [];
 
   const configs = await fetchFormasPagamento(gerenteId, dbOverride);
@@ -163,7 +154,7 @@ export async function validarPagamentosMistos(pagamentos, valorTotalVenda, clien
   let totalFiado = 0;
 
   for (const pag of pagamentos) {
-    const valorBruto = parseFloat(pag.valor || pag.valor_bruto);
+    const valorBruto = round2(parseFloat(pag.valor ?? pag.valor_bruto));
     if (isNaN(valorBruto) || valorBruto <= 0) {
       throw new Error(`Valor de pagamento inválido para a modalidade "${pag.forma_pagamento || pag.codigo}".`);
     }
@@ -175,10 +166,10 @@ export async function validarPagamentosMistos(pagamentos, valorTotalVenda, clien
       taxa_fixa: 0
     };
 
-    const calc = calcularTaxaPagamento(valorBruto, cfg.taxa_percentual, cfg.taxa_fixa);
+    const calc = calcularTaxaMonetaria(valorBruto, cfg.taxa_percentual, cfg.taxa_fixa);
 
     if (codigo === 'fiado') {
-      totalFiado += valorBruto;
+      totalFiado = sumMoney(totalFiado, valorBruto);
     }
 
     pagamentosValidados.push({
@@ -190,17 +181,14 @@ export async function validarPagamentosMistos(pagamentos, valorTotalVenda, clien
       valor_taxa: calc.valorTaxa,
       valor_liquido: calc.valorLiquido
     });
-
-    totalPago += calc.valorBruto;
   }
 
-  totalPago = parseFloat(totalPago.toFixed(2));
-  const totalEsperado = parseFloat(Number(valorTotalVenda).toFixed(2));
+  const totalEsperado = round2(valorTotalVenda);
+  const checagem = validarIgualdadeMonetaria(totalEsperado, pagamentosValidados);
 
-  const diferenca = Math.abs(totalPago - totalEsperado);
-  if (diferenca > 0.01) {
+  if (!checagem.valido) {
     throw new Error(
-      `A soma dos pagamentos (R$ ${totalPago.toFixed(2)}) diverge do total da venda (R$ ${totalEsperado.toFixed(2)}). Diferença: R$ ${(totalPago - totalEsperado).toFixed(2)}.`
+      `A soma dos pagamentos (R$ ${checagem.recebido.toFixed(2)}) diverge do total da venda (R$ ${checagem.esperado.toFixed(2)}). Diferença: R$ ${checagem.diferenca.toFixed(2)}.`
     );
   }
 
@@ -212,8 +200,8 @@ export async function validarPagamentosMistos(pagamentos, valorTotalVenda, clien
     await validateLimiteFiado(clienteId, totalFiado, gerenteId, dbOverride);
   }
 
-  const totalTaxas = parseFloat(pagamentosValidados.reduce((acc, p) => acc + p.valor_taxa, 0).toFixed(2));
-  const totalLiquido = parseFloat((totalEsperado - totalTaxas).toFixed(2));
+  const totalTaxas = fromCents(pagamentosValidados.reduce((acc, p) => acc + toCents(p.valor_taxa), 0));
+  const totalLiquido = subtractMoney(totalEsperado, totalTaxas);
 
   return {
     pagamentos: pagamentosValidados,
@@ -264,18 +252,25 @@ export async function fetchPagamentosVenda(vendaId, dbOverride = null) {
 }
 
 /**
- * Estorna os pagamentos de uma venda cancelada (Yuri Moreira / Yuri Mauriz S03)
+ * Estorna os pagamentos de uma venda cancelada (Yuri Moreira / Yuri Mauriz S03 / S05)
+ * Garante que vendas com devolução prévia não provoquem estorno financeiro duplicado.
  */
-export async function estornarPagamentosVenda(vendaId, clienteId, gerenteId, db) {
+export async function estornarPagamentosVenda(vendaId, clienteId, gerenteId, db, valorMaximoFiado = null) {
   const pagamentos = await db.getAllAsync(
     'SELECT * FROM PagamentoVenda WHERE venda_id = ? AND estornado = 0;',
     [vendaId]
   );
 
+  let fiadoRestante = valorMaximoFiado !== null ? Math.max(0, Number(valorMaximoFiado)) : Infinity;
+
   for (const pag of pagamentos) {
     await db.runAsync('UPDATE PagamentoVenda SET estornado = 1 WHERE id = ?;', [pag.id]);
     if (pag.forma_pagamento === 'fiado' && clienteId) {
-      await estornarFiado(clienteId, pag.valor_bruto, gerenteId, db);
+      const valorParaEstornar = Math.min(pag.valor_bruto, fiadoRestante);
+      if (valorParaEstornar > 0) {
+        await estornarFiado(clienteId, valorParaEstornar, gerenteId, db);
+        fiadoRestante -= valorParaEstornar;
+      }
     }
   }
 }
@@ -313,7 +308,7 @@ export async function apurarLucroReal(gerenteId, options = {}, dbOverride = null
     params.push(dataFim);
   }
   if (canalVenda && canalVenda !== 'todos') {
-    query += ' AND v.canal_venda = ?';
+    query += ' AND LOWER(v.canal_venda) = LOWER(?)';
     params.push(canalVenda);
   }
 
@@ -381,7 +376,7 @@ export async function apurarLucroReal(gerenteId, options = {}, dbOverride = null
     taxasOperacionais += vTaxasLiquidas;
     valorLiquidoRecebido += vLiquido;
 
-    const canal = v.canal_venda || 'balcao';
+    const canal = (v.canal_venda || 'balcao').toLowerCase().trim();
     if (!porCanal[canal]) {
       porCanal[canal] = {
         canal,
@@ -434,5 +429,181 @@ export async function apurarLucroReal(gerenteId, options = {}, dbOverride = null
     margemContribuicaoPercent: margemPercentual,
     porCanal,
     canais: Object.values(porCanal)
+  };
+}
+
+/**
+ * Auditoria Contábil e de Arredondamento (Francisco Yuri Mauriz - S05)
+ * Executa uma verificação completa e determinística sobre vendas, pagamentos,
+ * taxas, estornos e devoluções para certificar a conformidade matemática e contábil.
+ */
+export async function auditarConsistenciaContabil(gerenteId, dbOverride = null) {
+  const db = dbOverride || await getDb();
+
+  const vendas = await db.getAllAsync(`
+    SELECT 
+      v.*,
+      c.nome AS cliente_nome,
+      u.nome AS usuario_nome
+    FROM Venda v
+    LEFT JOIN Cliente c ON c.id = v.cliente_id
+    LEFT JOIN Usuario u ON u.id = v.usuario_id
+    WHERE v.gerente_id = ? 
+    ORDER BY v.id DESC;
+  `, [gerenteId]);
+
+  let totalVendasAuditadas = vendas.length;
+  let vendasConformes = 0;
+  let vendasComDivergencia = 0;
+  const divergencias = [];
+
+  let faturamentoTotalAuditado = 0;
+  let faturamentoCanceladoAuditado = 0;
+  let totalTaxasAuditadas = 0;
+  let totalCmvAuditado = 0;
+
+  for (const v of vendas) {
+    const vendaId = v.id;
+    let vendaOk = true;
+
+    const addDivergencia = (tipo, mensagem) => {
+      vendaOk = false;
+      divergencias.push({
+        vendaId,
+        tipo,
+        mensagem,
+        dataVenda: v.data_venda || v.created_at,
+        canalVenda: v.canal_venda || 'balcao',
+        clienteNome: v.cliente_nome || (v.cliente_id ? `Cliente #${v.cliente_id}` : 'Cliente Avulso'),
+        usuarioNome: v.usuario_nome || 'Operador',
+        valorTotal: v.valor_total,
+        statusVenda: v.status || 'concluida'
+      });
+    };
+
+    // Verifica itens da venda para obter subtotal real se valor_bruto não estiver gravado
+    const itensVenda = await db.getAllAsync(
+      'SELECT subtotal FROM ItensVenda WHERE venda_id = ?;',
+      [vendaId]
+    );
+    const somaItensCents = itensVenda.reduce((acc, it) => acc + toCents(it.subtotal), 0);
+
+    const descontoVendaCents = toCents(v.desconto || 0);
+    const valorTotalVendaCents = toCents(v.valor_total);
+
+    // Determina o valor bruto real (respeitando vendas legadas onde valor_bruto era 0 ou nulo)
+    let valorBrutoVendaCents;
+    if (v.valor_bruto !== null && v.valor_bruto !== undefined && Number(v.valor_bruto) > 0) {
+      valorBrutoVendaCents = toCents(v.valor_bruto);
+    } else if (somaItensCents > 0) {
+      valorBrutoVendaCents = somaItensCents;
+    } else {
+      valorBrutoVendaCents = valorTotalVendaCents + descontoVendaCents;
+    }
+
+    // 1. Validação de fórmula: valor_total == valor_bruto - desconto
+    // Só acusa divergência se houver desconto ou se o bruto for informado e diferente do total
+    if (descontoVendaCents > 0 || (valorBrutoVendaCents > 0 && valorBrutoVendaCents !== valorTotalVendaCents)) {
+      if (valorBrutoVendaCents - descontoVendaCents !== valorTotalVendaCents) {
+        addDivergencia(
+          'DESCONTO_INCOERENTE',
+          `Venda #${vendaId}: valor_total (R$ ${fromCents(valorTotalVendaCents)}) diverge de bruto (R$ ${fromCents(valorBrutoVendaCents)}) - desconto (R$ ${fromCents(descontoVendaCents)}).`
+        );
+      }
+    }
+
+    // 2. Validação da soma dos pagamentos
+    const pagamentos = await db.getAllAsync(
+      'SELECT * FROM PagamentoVenda WHERE venda_id = ?;',
+      [vendaId]
+    );
+
+    const somaPagamentosCents = pagamentos.reduce((acc, p) => acc + toCents(p.valor_bruto ?? p.valor_pago), 0);
+    if (somaPagamentosCents !== valorTotalVendaCents) {
+      addDivergencia(
+        'DIVERGENCIA_PAGAMENTO_TOTAL',
+        `Venda #${vendaId}: soma dos pagamentos (R$ ${fromCents(somaPagamentosCents)}) diverge do total da venda (R$ ${fromCents(valorTotalVendaCents)}).`
+      );
+    }
+
+    // 3. Validação de taxas e líquidos de cada pagamento
+    for (const p of pagamentos) {
+      const pBruto = toCents(p.valor_bruto ?? p.valor_pago);
+      const pTaxa = toCents(p.valor_taxa);
+      const pLiq = toCents(p.valor_liquido);
+      if (pTaxa + pLiq !== pBruto) {
+        addDivergencia(
+          'TAXA_LIQUIDO_INCONSISTENTE',
+          `Pagamento #${p.id} da Venda #${vendaId}: valor_taxa (R$ ${fromCents(pTaxa)}) + valor_liquido (R$ ${fromCents(pLiq)}) != valor_bruto (R$ ${fromCents(pBruto)}).`
+        );
+      }
+    }
+
+    // 4. Validação de cancelamento e estornos
+    if (v.status === 'cancelada') {
+      faturamentoCanceladoAuditado = sumMoney(faturamentoCanceladoAuditado, v.valor_total);
+
+      // Pagamentos devem estar todos com estornado = 1
+      const naoEstornados = pagamentos.filter(p => p.estornado !== 1 && p.status !== 'estornado');
+      if (naoEstornados.length > 0) {
+        addDivergencia(
+          'PAGAMENTO_CANCELADO_NAO_ESTORNADO',
+          `Venda cancelada #${vendaId} possui pagamentos ativos não estornados.`
+        );
+      }
+
+      // Registro de CancelamentoVenda obrigatório
+      const canc = await db.getAllAsync(
+        'SELECT * FROM CancelamentoVenda WHERE venda_id = ?;',
+        [vendaId]
+      );
+      if (canc.length === 0) {
+        addDivergencia(
+          'CANCELAMENTO_SEM_AUDITORIA',
+          `Venda #${vendaId} está cancelada mas não possui registro correspondente na tabela CancelamentoVenda.`
+        );
+      }
+    } else {
+      // Venda válida/ativa
+      faturamentoTotalAuditado = sumMoney(faturamentoTotalAuditado, v.valor_total);
+      totalTaxasAuditadas = sumMoney(totalTaxasAuditadas, v.total_taxas || 0);
+      totalCmvAuditado = sumMoney(totalCmvAuditado, v.valor_cmv || 0);
+    }
+
+    // 5. Validação de devoluções parciais
+    const devolucoes = await db.getAllAsync(
+      'SELECT * FROM DevolucaoVenda WHERE venda_id = ?;',
+      [vendaId]
+    );
+    if (devolucoes.length > 0) {
+      let totalEstornadoCents = 0;
+      for (const d of devolucoes) {
+        totalEstornadoCents += toCents(d.valor_estornado);
+      }
+      if (totalEstornadoCents > valorTotalVendaCents) {
+        addDivergencia(
+          'ESTORNO_EXCEDE_TOTAL',
+          `Venda #${vendaId}: total devolvido (R$ ${fromCents(totalEstornadoCents)}) excede o valor da venda (R$ ${fromCents(valorTotalVendaCents)}).`
+        );
+      }
+    }
+
+    if (vendaOk) {
+      vendasConformes++;
+    } else {
+      vendasComDivergencia++;
+    }
+  }
+
+  return {
+    statusGeral: divergencias.length === 0 ? 'CONFORME' : 'DIVERGENCIA_ENCONTRADA',
+    totalVendasAuditadas,
+    vendasConformes,
+    vendasComDivergencia,
+    divergencias,
+    faturamentoTotalAuditado,
+    faturamentoCanceladoAuditado,
+    totalTaxasAuditadas,
+    totalCmvAuditado
   };
 }

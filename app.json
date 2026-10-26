@@ -1,17 +1,11 @@
 {
-  "$schema": "https://exp.host/--/api/v2/project/configuration/schema/54.0.0",
   "expo": {
     "name": "LucroCerto",
     "slug": "sitema-custo-real",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/favicon.png",
+    "icon": "./assets/logo_lucrocerto.png",
     "userInterfaceStyle": "light",
-    "splash": {
-      "image": "./assets/logo_lucrocerto.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
-    },
     "ios": {
       "supportsTablet": true
     },
@@ -21,7 +15,6 @@
         "foregroundImage": "./assets/logo_lucrocerto.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true,
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
@@ -45,7 +38,19 @@
           "cameraPermission": "Permita que o $(PRODUCT_NAME) acesse a câmera para ler códigos de barras."
         }
       ],
-      "expo-audio"
+      "expo-audio",
+      "expo-sqlite",
+      "expo-status-bar",
+      "expo-asset",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/logo_lucrocerto.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#ffffff"
+        }
+      ],
+      "expo-font"
     ],
     "owner": "yurikauan08"
   }

@@ -13,7 +13,8 @@ import {
   registrarPagamentosVenda, 
   estornarPagamentosVenda, 
   fetchPagamentosVenda, 
-  apurarLucroReal 
+  apurarLucroReal,
+  auditarConsistenciaContabil 
 } from '../services/paymentService';
 import { 
   initStockTables, 
@@ -25,26 +26,30 @@ import {
   calcularNovoPMP, 
   registrarEntradaMercadorias, 
   registrarPerdaEstoque, 
-  fetchRelatorioPerdas 
+  fetchRelatorioPerdas,
+  auditarSaldoKardex,
+  auditarTodosProdutosKardex,
+  fetchRelatorioPerdasAvariasDetalhado 
 } from '../services/stockService';
 import { 
   initSaleTables, 
   validarERecalcularCarrinho, 
   finalizarVendaCompleta, 
   cancelarVendaComAutorizacao, 
-  processarDevolucaoParcial 
+  processarDevolucaoParcial,
+  withSaleLock 
 } from '../services/saleService';
 
 // Re-exportações de serviços para disponibilidade global
 export {
   // Clientes e Fiado
   saveCliente, fetchClientes, getClienteById, validateLimiteFiado, debitarFiado, estornarFiado,
-  // Pagamentos, Taxas e Lucro Real
-  fetchFormasPagamento, saveFormaPagamentoConfig, calcularTaxaPagamento, validarPagamentosMistos, registrarPagamentosVenda, estornarPagamentosVenda, fetchPagamentosVenda, apurarLucroReal,
-  // Estoque, Fornecedores, Kardex e PMP
-  saveFornecedor, fetchFornecedores, getFornecedorById, registrarMovimentacaoKardex, fetchKardex, calcularNovoPMP, registrarEntradaMercadorias, registrarPerdaEstoque, fetchRelatorioPerdas,
-  // Vendas, Carrinho, Cancelamento e Devolução
-  validarERecalcularCarrinho, finalizarVendaCompleta, cancelarVendaComAutorizacao, processarDevolucaoParcial
+  // Pagamentos, Taxas, Lucro Real e Auditoria Contábil (Yuri Mauriz)
+  fetchFormasPagamento, saveFormaPagamentoConfig, calcularTaxaPagamento, validarPagamentosMistos, registrarPagamentosVenda, estornarPagamentosVenda, fetchPagamentosVenda, apurarLucroReal, auditarConsistenciaContabil,
+  // Estoque, Fornecedores, Kardex, PMP e Auditoria de Kardex / Perdas (Zé Neto)
+  saveFornecedor, fetchFornecedores, getFornecedorById, registrarMovimentacaoKardex, fetchKardex, calcularNovoPMP, registrarEntradaMercadorias, registrarPerdaEstoque, fetchRelatorioPerdas, auditarSaldoKardex, auditarTodosProdutosKardex, fetchRelatorioPerdasAvariasDetalhado,
+  // Vendas, Carrinho, Cancelamento e Devolução (Yuri Moreira)
+  validarERecalcularCarrinho, finalizarVendaCompleta, cancelarVendaComAutorizacao, processarDevolucaoParcial, withSaleLock
 };
 
 // Inicializa o esquema do SQLite e insere dados padrão e migrações caso o banco esteja vazio
@@ -1130,7 +1135,7 @@ export async function fetchReportData(days, gerenteId) {
   const prevLimitDateISO = prevLimitDate.toISOString();
 
   const prevSalesResult = await db.getAllAsync(
-    'SELECT SUM(valor_total) as total FROM Venda WHERE data_venda >= ? AND data_venda < ? AND gerente_id = ?;',
+    'SELECT SUM(valor_total) as total FROM Venda WHERE data_venda >= ? AND data_venda < ? AND gerente_id = ? AND status != \'cancelada\';',
     [prevLimitDateISO, limitDateISO, gerenteId]
   );
   const prevReceita = prevSalesResult[0]?.total || 0;
@@ -1154,7 +1159,7 @@ export async function fetchReportData(days, gerenteId) {
     end.setHours(23, 59, 59, 999);
 
     const intervalSales = await db.getAllAsync(
-      'SELECT SUM(valor_total) as total, SUM(valor_cmv) as cmv, SUM(valor_opex) as opex FROM Venda WHERE data_venda >= ? AND data_venda <= ? AND gerente_id = ?;',
+      'SELECT SUM(valor_total) as total, SUM(valor_cmv) as cmv, SUM(valor_opex) as opex FROM Venda WHERE data_venda >= ? AND data_venda <= ? AND gerente_id = ? AND status != \'cancelada\';',
       [start.toISOString(), end.toISOString(), gerenteId]
     );
 

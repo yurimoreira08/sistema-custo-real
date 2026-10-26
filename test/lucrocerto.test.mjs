@@ -2,13 +2,25 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
+import { 
+  round2, 
+  round3, 
+  toCents, 
+  fromCents, 
+  sumMoney, 
+  subtractMoney, 
+  multiplyMoney, 
+  calcularTaxaMonetaria, 
+  validarIgualdadeMonetaria, 
+  calcularProporcional 
+} from '../src/utils/money.js';
 
 // ============================================================================
-// SUÍTE DE TESTES AUTOMATIZADOS: LUCROCERTO (SEMANAS S01 A S04)
+// SUÍTE DE TESTES AUTOMATIZADOS: LUCROCERTO (SEMANAS S01 A S05)
 // Integrantes:
-//   - Francisco Yuri da Silva Mauriz (Financeiro, Taxas, Lucro Real, CMV)
-//   - Yuri Kauan Ibiapino Moreira (Vendas, Carrinho, Cancelamento, Devoluções)
-//   - José da Luz Coelho Neto (Estoque, Fornecedores, Kardex, PMP, Perdas)
+//   - Francisco Yuri da Silva Mauriz (Financeiro, Taxas, Lucro Real, Auditoria Contábil)
+//   - Yuri Kauan Ibiapino Moreira (Vendas, Carrinho, Cancelamento, Devoluções, Integridade)
+//   - José da Luz Coelho Neto (Estoque, Fornecedores, Kardex, PMP, Auditoria Kardex e Perdas)
 // ============================================================================
 
 function sha256(str) {
@@ -97,7 +109,7 @@ function setupTestDb() {
       subtotal REAL NOT NULL DEFAULT 0.0,
       desconto REAL NOT NULL DEFAULT 0.0,
       total REAL NOT NULL DEFAULT 0.0,
-      status TEXT NOT NULL DEFAULT 'concluida' CHECK(status IN ('concluida', 'cancelada', 'devolvida_parcial')),
+      status TEXT NOT NULL DEFAULT 'concluida' CHECK(status IN ('concluida', 'cancelada', 'devolvida_parcial', 'totalmente_devolvida')),
       canal_venda TEXT NOT NULL DEFAULT 'balcao' CHECK(canal_venda IN ('balcao', 'delivery', 'encomenda')),
       observacoes TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -991,3 +1003,511 @@ test('Cenário F — Dashboard Financeiro Consolidado com Canais e Dedução de 
   assert.equal(mapaCanais['delivery'], 150.0);
   assert.equal(mapaCanais['encomenda'], undefined);
 });
+
+// ============================================================================
+// TESTES ESPECÍFICOS: SEMANA S05
+// ============================================================================
+
+test('S05 — Francisco Yuri Mauriz: Precisão Decimal, Arredondamento e Consistência Contábil', () => {
+  // 1. Precisão decimal estrita e eliminação de drift binário
+  assert.equal(round2(0.1 + 0.2), 0.30, '0.1 + 0.2 deve arredondar para exatamente 0.30');
+  assert.equal(round2(10.005), 10.01, 'Arredondamento determinístico de meio centavo');
+  assert.equal(toCents(19.99), 1999);
+  assert.equal(fromCents(1999), 19.99);
+  assert.equal(sumMoney(10.15, 20.25, 30.33), 60.73);
+  assert.equal(subtractMoney(100.00, 33.33, 33.33), 33.34);
+
+  // 2. Cálculo determinístico de taxas percentuais e fixas
+  // Exemplo fracionário: R$ 33,33 com taxa percentual de 2,75% e taxa fixa de R$ 0,15
+  const calcFrac = calcularTaxaMonetaria(33.33, 2.75, 0.15);
+  // 3333 centavos * 2.75% = 91.6575 -> 92 centavos variáveis + 15 centavos fixos = 107 centavos (R$ 1.07)
+  assert.equal(calcFrac.valorTaxa, 1.07);
+  assert.equal(calcFrac.valorLiquido, 32.26);
+  assert.equal(sumMoney(calcFrac.valorTaxa, calcFrac.valorLiquido), 33.33, 'Soma de taxa e líquido deve ser idêntica ao bruto');
+
+  // 3. Validação de pagamentos mistos divididos com ajuste de centavos
+  const vendaTotal = 100.00;
+  const pagamentosValidos = [
+    { valor: 33.33 },
+    { valor: 33.33 },
+    { valor: 33.34 }
+  ];
+  const checagemOk = validarIgualdadeMonetaria(vendaTotal, pagamentosValidos);
+  assert.equal(checagemOk.valido, true);
+  assert.equal(checagemOk.recebido, 100.00);
+
+  // Diferença de 1 centavo deve ser rejeitada
+  const pagamentosComDiferenca = [
+    { valor: 33.33 },
+    { valor: 33.33 },
+    { valor: 33.33 }
+  ];
+  const checagemErro = validarIgualdadeMonetaria(vendaTotal, pagamentosComDiferenca);
+  assert.equal(checagemErro.valido, false);
+  assert.equal(checagemErro.diferenca, -0.01);
+
+  // 4. Rotina de Auditoria Contábil
+  const db = setupTestDb();
+  db.prepare(`INSERT INTO Usuario (id, nome, email, senha, cargo) VALUES (1, 'Gerente', 'gerente@teste.com', 'hash', 'gerente');`).run();
+
+  // Venda 1: Válida e Conforme (R$ 100,00, sem desconto)
+  db.prepare(`
+    INSERT INTO Venda (id, gerente_id, subtotal, desconto, total, status, canal_venda)
+    VALUES (1, 1, 100.0, 0.0, 100.0, 'concluida', 'balcao');
+  `).run();
+  db.prepare(`
+    INSERT INTO PagamentoVenda (venda_id, gerente_id, forma_pagamento, valor_pago, valor_taxa, valor_liquido, status)
+    VALUES (1, 1, 'pix', 100.0, 1.0, 99.0, 'confirmado');
+  `).run();
+
+  // Venda 2: Cancelada com Pagamento Estornado e Auditoria Registrada
+  db.prepare(`
+    INSERT INTO Venda (id, gerente_id, subtotal, desconto, total, status, canal_venda)
+    VALUES (2, 1, 50.0, 0.0, 50.0, 'cancelada', 'balcao');
+  `).run();
+  db.prepare(`
+    INSERT INTO PagamentoVenda (venda_id, gerente_id, forma_pagamento, valor_pago, valor_taxa, valor_liquido, status)
+    VALUES (2, 1, 'dinheiro', 50.0, 0.0, 50.0, 'estornado');
+  `).run();
+  db.prepare(`
+    INSERT INTO CancelamentoVenda (id, venda_id, gerente_id, gerente_responsavel_id, motivo_justificativa)
+    VALUES (1, 2, 1, 1, 'Cancelamento solicitado pelo cliente');
+  `).run();
+
+  function auditarContabil(dbInst, gerenteId) {
+    const vendas = dbInst.prepare('SELECT * FROM Venda WHERE gerente_id = ?').all(gerenteId);
+    let conformes = 0;
+    const divergencias = [];
+
+    for (const v of vendas) {
+      let ok = true;
+      const pagamentos = dbInst.prepare('SELECT * FROM PagamentoVenda WHERE venda_id = ?').all(v.id);
+      const somaPag = pagamentos.reduce((acc, p) => acc + toCents(p.valor_pago), 0);
+      
+      if (somaPag !== toCents(v.total)) {
+        ok = false;
+        divergencias.push({ vendaId: v.id, motivo: 'SOMA_PAGAMENTOS_DIVERGENTE' });
+      }
+
+      for (const p of pagamentos) {
+        if (toCents(p.valor_taxa) + toCents(p.valor_liquido) !== toCents(p.valor_pago)) {
+          ok = false;
+          divergencias.push({ vendaId: v.id, motivo: 'TAXA_MAIS_LIQUIDO_DIVERGE' });
+        }
+      }
+
+      if (v.status === 'cancelada') {
+        const naoEstornados = pagamentos.filter(p => p.status !== 'estornado');
+        if (naoEstornados.length > 0) {
+          ok = false;
+          divergencias.push({ vendaId: v.id, motivo: 'PAGAMENTO_CANCELADO_ATIVO' });
+        }
+        const canc = dbInst.prepare('SELECT id FROM CancelamentoVenda WHERE venda_id = ?').get(v.id);
+        if (!canc) {
+          ok = false;
+          divergencias.push({ vendaId: v.id, motivo: 'SEM_REGISTRO_CANCELAMENTO' });
+        }
+      }
+
+      if (ok) conformes++;
+    }
+
+    return {
+      totalVendasAuditadas: vendas.length,
+      vendasConformes: conformes,
+      vendasComDivergencia: divergencias.length,
+      divergencias,
+      statusGeral: divergencias.length === 0 ? 'CONFORME' : 'DIVERGENCIA_ENCONTRADA'
+    };
+  }
+
+  const resAuditoria1 = auditarContabil(db, 1);
+  assert.equal(resAuditoria1.statusGeral, 'CONFORME');
+  assert.equal(resAuditoria1.totalVendasAuditadas, 2);
+  assert.equal(resAuditoria1.vendasConformes, 2);
+  assert.equal(resAuditoria1.vendasComDivergencia, 0);
+
+  // Introduz anomalia intencional: Venda 3 cancelada, mas com pagamento ainda como 'confirmado'
+  db.prepare(`
+    INSERT INTO Venda (id, gerente_id, subtotal, desconto, total, status, canal_venda)
+    VALUES (3, 1, 80.0, 0.0, 80.0, 'cancelada', 'balcao');
+  `).run();
+  db.prepare(`
+    INSERT INTO PagamentoVenda (venda_id, gerente_id, forma_pagamento, valor_pago, valor_taxa, valor_liquido, status)
+    VALUES (3, 1, 'pix', 80.0, 0.80, 79.20, 'confirmado');
+  `).run();
+
+  const resAuditoria2 = auditarContabil(db, 1);
+  assert.equal(resAuditoria2.statusGeral, 'DIVERGENCIA_ENCONTRADA');
+  assert.equal(resAuditoria2.vendasComDivergencia > 0, true);
+  assert.equal(resAuditoria2.divergencias.some(d => d.vendaId === 3), true);
+});
+
+test('S05 — Yuri Kauan Ibiapino Moreira: Integridade de Fluxo, Cancelamento Único, Devoluções e Concorrência', () => {
+  const db = setupTestDb();
+  db.prepare(`INSERT INTO Usuario (id, nome, email, senha, cargo) VALUES (1, 'Gerente', 'gerente@teste.com', 'hash', 'gerente');`).run();
+  db.prepare(`INSERT INTO Produto (id, gerente_id, nome, preco_custo, preco_venda, estoque_atual) VALUES (1, 1, 'Produto Teste', 10.0, 20.0, 50.0);`).run();
+
+  // Venda inicial de 5 unidades
+  db.prepare(`INSERT INTO Venda (id, gerente_id, total, status) VALUES (1, 1, 100.0, 'concluida');`).run();
+  db.prepare(`INSERT INTO ItensVenda (id, venda_id, produto_id, quantidade, preco_unitario, subtotal) VALUES (1, 1, 1, 5, 20.0, 100.0);`).run();
+  db.prepare(`INSERT INTO PagamentoVenda (id, venda_id, gerente_id, forma_pagamento, valor_pago, valor_taxa, status) VALUES (1, 1, 1, 'dinheiro', 100.0, 0.0, 'confirmado');`).run();
+
+  // 1. Cancelamento com bloqueio de duplicidade
+  function cancelarVenda(vendaId, justificativa) {
+    const venda = db.prepare('SELECT * FROM Venda WHERE id = ?').get(vendaId);
+    if (!venda) throw new Error('Venda não encontrada.');
+    if (venda.status === 'cancelada') {
+      throw new Error('Esta venda já foi cancelada anteriormente.');
+    }
+    if (venda.status === 'totalmente_devolvida') {
+      throw new Error('Esta venda já teve todos os seus itens devolvidos.');
+    }
+
+    db.prepare("UPDATE Venda SET status = 'cancelada' WHERE id = ?").run(vendaId);
+    db.prepare("UPDATE PagamentoVenda SET status = 'estornado' WHERE venda_id = ?").run(vendaId);
+    db.prepare(`
+      INSERT INTO CancelamentoVenda (venda_id, gerente_id, gerente_responsavel_id, motivo_justificativa)
+      VALUES (?, 1, 1, ?);
+    `).run(vendaId, justificativa);
+
+    return { sucesso: true };
+  }
+
+  // Primeiro cancelamento: deve ter sucesso
+  const canc1 = cancelarVenda(1, 'Cliente desistiu');
+  assert.equal(canc1.sucesso, true);
+
+  // Segundo cancelamento da MESMA venda: deve ser estritamente impedido
+  assert.throws(() => {
+    cancelarVenda(1, 'Tentativa duplicada');
+  }, /Esta venda já foi cancelada anteriormente/);
+
+  // 2. Impedir devolução sobre venda cancelada
+  function processarDevolucaoItem(vendaId, produtoId, qtdDevolver, aptoRevenda) {
+    const venda = db.prepare('SELECT status FROM Venda WHERE id = ?').get(vendaId);
+    if (!venda) throw new Error('Venda não encontrada.');
+    if (venda.status === 'cancelada') {
+      throw new Error('Não é possível realizar devolução de uma venda já cancelada.');
+    }
+    if (venda.status === 'totalmente_devolvida') {
+      throw new Error('Esta venda já teve todos os seus itens devolvidos.');
+    }
+    return true;
+  }
+
+  assert.throws(() => {
+    processarDevolucaoItem(1, 1, 1, true);
+  }, /Não é possível realizar devolução de uma venda já cancelada/);
+
+  // 3. Devoluções sucessivas respeitando o teto original (Venda 2 com 5 unidades)
+  db.prepare(`INSERT INTO Venda (id, gerente_id, total, status) VALUES (2, 1, 100.0, 'concluida');`).run();
+  db.prepare(`INSERT INTO ItensVenda (id, venda_id, produto_id, quantidade, preco_unitario, subtotal) VALUES (2, 2, 1, 5, 20.0, 100.0);`).run();
+
+  function devolucoesSucessivas(vendaId, produtoId, qtdDevolver) {
+    const itemOrig = db.prepare('SELECT * FROM ItensVenda WHERE venda_id = ? AND produto_id = ?').get(vendaId, produtoId);
+    const devsAnteriores = db.prepare(`
+      SELECT COALESCE(SUM(id_dev.quantidade), 0) as jaDevolvido
+      FROM ItensDevolucao id_dev
+      JOIN DevolucaoVenda dv ON dv.id = id_dev.devolucao_id
+      WHERE dv.venda_id = ? AND id_dev.produto_id = ?;
+    `).get(vendaId, produtoId);
+
+    const saldoDevoluvel = itemOrig.quantidade - (devsAnteriores?.jaDevolvido || 0);
+    if (qtdDevolver > saldoDevoluvel) {
+      throw new Error(`Quantidade solicitada (${qtdDevolver}) excede o saldo disponível para devolução (${saldoDevoluvel}).`);
+    }
+
+    // Registra devolução
+    const resDev = db.prepare(`
+      INSERT INTO DevolucaoVenda (venda_id, gerente_id, valor_estornado, motivo)
+      VALUES (?, 1, ?, 'Devolução parcial');
+    `).run(vendaId, qtdDevolver * itemOrig.preco_unitario);
+
+    db.prepare(`
+      INSERT INTO ItensDevolucao (devolucao_id, produto_id, quantidade, valor_unitario, subtotal_estornado, apto_revenda)
+      VALUES (?, ?, ?, ?, ?, 1);
+    `).run(resDev.lastInsertRowid, produtoId, qtdDevolver, itemOrig.preco_unitario, qtdDevolver * itemOrig.preco_unitario);
+
+    const novoSaldo = saldoDevoluvel - qtdDevolver;
+    if (novoSaldo <= 0) {
+      db.prepare("UPDATE Venda SET status = 'totalmente_devolvida' WHERE id = ?").run(vendaId);
+    } else {
+      db.prepare("UPDATE Venda SET status = 'devolvida_parcial' WHERE id = ?").run(vendaId);
+    }
+
+    return { saldoRestante: novoSaldo };
+  }
+
+  // Devolução 1: devolve 2 unidades (saldo passa a ser 3)
+  const d1 = devolucoesSucessivas(2, 1, 2);
+  assert.equal(d1.saldoRestante, 3);
+
+  // Devolução 2: devolve 3 unidades (saldo passa a ser 0 e status vira totalmente_devolvida)
+  const d2 = devolucoesSucessivas(2, 1, 3);
+  assert.equal(d2.saldoRestante, 0);
+
+  // Devolução 3: tenta devolver mais 1 unidade -> deve falhar
+  assert.throws(() => {
+    devolucoesSucessivas(2, 1, 1);
+  }, /excede o saldo disponível/);
+
+  // 4. Teste de trava de concorrência por venda (mutex)
+  const activeLocks = new Set();
+  function withTestLock(vendaId, fn) {
+    if (activeLocks.has(vendaId)) {
+      throw new Error(`Operação concorrente bloqueada para a venda #${vendaId}.`);
+    }
+    activeLocks.add(vendaId);
+    try {
+      return fn();
+    } finally {
+      activeLocks.delete(vendaId);
+    }
+  }
+
+  // Primeira operação adquire trava
+  activeLocks.add(99);
+  // Segunda operação concorrente deve ser rejeitada
+  assert.throws(() => {
+    withTestLock(99, () => 'executou');
+  }, /Operação concorrente bloqueada/);
+  activeLocks.delete(99);
+
+  // 5. Teste de Rollback em falha de operação
+  db.exec('BEGIN TRANSACTION;');
+  try {
+    db.prepare("INSERT INTO Venda (id, gerente_id, total, status) VALUES (999, 1, 50.0, 'concluida');").run();
+    // Simula erro forçado
+    throw new Error('Falha simulada durante processamento');
+  } catch (err) {
+    db.exec('ROLLBACK;');
+  }
+
+  // Verifica que a venda 999 NÃO foi persistida
+  const vendaOrfa = db.prepare('SELECT * FROM Venda WHERE id = 999').get();
+  assert.equal(vendaOrfa, undefined, 'A transação com falha deve ter sofrido rollback completo sem deixar dados órfãos');
+});
+
+test('S05 — José da Luz Coelho Neto: Auditoria de Kardex, Reconstrução de Saldo e Relatório Gerencial de Perdas e Avarias', () => {
+  const db = setupTestDb();
+  db.prepare(`INSERT INTO Usuario (id, nome, email, senha, cargo) VALUES (1, 'Auditor Zé Neto', 'zeneto@teste.com', 'hash', 'gerente');`).run();
+  db.prepare(`INSERT INTO Fornecedor (id, gerente_id, razao_social) VALUES (1, 1, 'Distribuidora Premium');`).run();
+  db.prepare(`INSERT INTO Produto (id, gerente_id, nome, preco_custo, preco_venda, estoque_atual, fornecedor_id, categoria) VALUES (1, 1, 'Suco de Uva 1L', 8.0, 14.0, 0, 1, 'Bebidas');`).run();
+
+  function lancarKardex(produtoId, tipo, qtd, saldoAnt, saldoNovo, custo, just) {
+    db.prepare(`
+      INSERT INTO MovimentacaoEstoque (gerente_id, produto_id, tipo_operacao, quantidade, saldo_anterior, saldo_novo, custo_unitario, justificativa)
+      VALUES (1, ?, ?, ?, ?, ?, ?, ?);
+    `).run(produtoId, tipo, qtd, saldoAnt, saldoNovo, custo, just);
+  }
+
+  // Sequência de eventos no estoque:
+  // 1. Entrada de 100 unidades (0 -> 100)
+  lancarKardex(1, 'ENTRADA', 100, 0, 100, 8.0, 'Entrada de compra NF-100');
+  // 2. Venda de 30 unidades (100 -> 70)
+  lancarKardex(1, 'SAIDA_VENDA', -30, 100, 70, 8.0, 'Venda balcão');
+  // 3. Cancelamento de venda com estorno de 10 unidades (70 -> 80)
+  lancarKardex(1, 'CANCELAMENTO_VENDA', 10, 70, 80, 8.0, 'Estorno cancelamento');
+  // 4. Perda por avaria de 5 unidades (80 -> 75)
+  lancarKardex(1, 'PERDA', -5, 80, 75, 8.0, 'Quebra no transporte');
+  // 5. Devolução de cliente de 2 unidades aptas (75 -> 77)
+  lancarKardex(1, 'DEVOLUCAO', 2, 75, 77, 8.0, 'Devolução cliente apto');
+
+  // Atualiza estoque atual para 77
+  db.prepare('UPDATE Produto SET estoque_atual = 77 WHERE id = 1').run();
+
+  // Rotina de auditoria de reconstrução de saldo
+  function auditarProdutoKardex(produtoId) {
+    const prod = db.prepare('SELECT * FROM Produto WHERE id = ?').get(produtoId);
+    const movs = db.prepare('SELECT * FROM MovimentacaoEstoque WHERE produto_id = ? ORDER BY id ASC').all(produtoId);
+
+    let saldoReconstruido = 0;
+    const errosContinuidade = [];
+    let ultimoSaldo = null;
+
+    if (movs.length > 0) {
+      saldoReconstruido = movs[0].saldo_anterior;
+      ultimoSaldo = saldoReconstruido;
+
+      for (let i = 0; i < movs.length; i++) {
+        const m = movs[i];
+        if (i > 0 && Math.abs(m.saldo_anterior - ultimoSaldo) > 0.001) {
+          errosContinuidade.push({ movId: m.id, tipo: 'SALTO_DE_SALDO' });
+        }
+        const calcNovo = round3(m.saldo_anterior + m.quantidade);
+        if (Math.abs(calcNovo - m.saldo_novo) > 0.001) {
+          errosContinuidade.push({ movId: m.id, tipo: 'CALCULO_RESULTANTE_INVALIDO' });
+        }
+        saldoReconstruido = m.saldo_novo;
+        ultimoSaldo = m.saldo_novo;
+      }
+    } else {
+      saldoReconstruido = prod.estoque_atual;
+    }
+
+    const divergencia = round3(prod.estoque_atual - saldoReconstruido);
+    return {
+      produtoId: prod.id,
+      nome: prod.nome,
+      estoqueAtual: prod.estoque_atual,
+      saldoReconstruido,
+      divergencia,
+      conforme: Math.abs(divergencia) < 0.001 && errosContinuidade.length === 0,
+      errosContinuidade
+    };
+  }
+
+  // Auditoria 1: Deve certificar conformidade 100%
+  const aud1 = auditarProdutoKardex(1);
+  assert.equal(aud1.conforme, true);
+  assert.equal(aud1.saldoReconstruido, 77);
+  assert.equal(aud1.estoqueAtual, 77);
+  assert.equal(aud1.divergencia, 0);
+
+  // Auditoria 2: Detecção não-destrutiva de desvio físico (estoque adulterado para 60)
+  db.prepare('UPDATE Produto SET estoque_atual = 60 WHERE id = 1').run();
+  const aud2 = auditarProdutoKardex(1);
+  assert.equal(aud2.conforme, false);
+  assert.equal(aud2.divergencia, -17, 'Deve detectar desfalque físico de 17 unidades');
+  // Verifica que a auditoria não alterou o estoque nem excluiu histórico
+  const prodCheck = db.prepare('SELECT estoque_atual FROM Produto WHERE id = 1').get();
+  assert.equal(prodCheck.estoque_atual, 60, 'Auditoria é analítica e não destrutiva');
+
+  // Relatório Gerencial de Perdas e Avarias por Período e Categoria
+  db.prepare(`
+    INSERT INTO PerdaEstoque (gerente_id, produto_id, quantidade, motivo_tipo, justificativa, custo_unitario_aplicado, impacto_financeiro, usuario_id)
+    VALUES (1, 1, 5, 'quebra', 'Quebra de garrafa na prateleira', 8.0, 40.0, 1);
+  `).run();
+
+  db.prepare(`INSERT INTO Produto (id, gerente_id, nome, preco_custo, preco_venda, estoque_atual, categoria) VALUES (2, 1, 'Iogurte Natural', 3.5, 6.0, 20.0, 'Laticínios');`).run();
+  db.prepare(`
+    INSERT INTO PerdaEstoque (gerente_id, produto_id, quantidade, motivo_tipo, justificativa, custo_unitario_aplicado, impacto_financeiro, usuario_id)
+    VALUES (1, 2, 4, 'vencimento', 'Validade expirada', 3.5, 14.0, 1);
+  `).run();
+
+  function gerarRelatorioPerdas(gerenteId) {
+    const rows = db.prepare(`
+      SELECT 
+        pe.*,
+        p.nome as produto_nome,
+        p.categoria as produto_categoria
+      FROM PerdaEstoque pe
+      JOIN Produto p ON p.id = pe.produto_id
+      WHERE pe.gerente_id = ?
+    `).all(gerenteId);
+
+    const porTipo = {};
+    const porCategoria = {};
+    let totalFinanceiro = 0;
+    let totalItens = 0;
+
+    for (const r of rows) {
+      totalFinanceiro = sumMoney(totalFinanceiro, r.impacto_financeiro);
+      totalItens = round3(totalItens + r.quantidade);
+
+      porTipo[r.motivo_tipo] = sumMoney(porTipo[r.motivo_tipo] || 0, r.impacto_financeiro);
+      const cat = r.produto_categoria || 'Sem categoria';
+      porCategoria[cat] = sumMoney(porCategoria[cat] || 0, r.impacto_financeiro);
+    }
+
+    return {
+      totalRegistros: rows.length,
+      totalItens,
+      totalFinanceiro,
+      porTipo,
+      porCategoria,
+      linhas: rows
+    };
+  }
+
+  const relPerdas = gerarRelatorioPerdas(1);
+  assert.equal(relPerdas.totalRegistros, 2);
+  assert.equal(relPerdas.totalItens, 9.0);
+  assert.equal(relPerdas.totalFinanceiro, 54.0, 'Impacto financeiro consolidado: 40 + 14 = 54.0');
+  assert.equal(relPerdas.porTipo['quebra'], 40.0);
+  assert.equal(relPerdas.porTipo['vencimento'], 14.0);
+  assert.equal(relPerdas.porCategoria['Bebidas'], 40.0);
+  assert.equal(relPerdas.porCategoria['Laticínios'], 14.0);
+});
+
+test('S05 — Integração Ponta a Ponta: Ciclo Completo com Auditorias, Cancelamento e Relatórios', () => {
+  const db = setupTestDb();
+  db.prepare(`INSERT INTO Usuario (id, nome, email, senha, cargo) VALUES (1, 'Super Gerente', 'super@teste.com', 'hash', 'gerente');`).run();
+  db.prepare(`INSERT INTO Fornecedor (id, gerente_id, razao_social) VALUES (1, 1, 'Distribuidora Global');`).run();
+  
+  // Produto com PMP inicial R$ 10,00 e estoque 20
+  db.prepare(`INSERT INTO Produto (id, gerente_id, nome, preco_custo, preco_venda, estoque_atual, fornecedor_id, categoria) VALUES (1, 1, 'Café Torrado 500g', 10.0, 16.0, 20.0, 1, 'Matinais');`).run();
+
+  // 1. Venda de 5 unidades por R$ 80,00 (5 * 16.00) com pagamento misto (R$ 50 PIX + R$ 30 Dinheiro)
+  db.prepare(`INSERT INTO Venda (id, gerente_id, subtotal, desconto, total, status, canal_venda) VALUES (1, 1, 80.0, 0.0, 80.0, 'concluida', 'balcao');`).run();
+  db.prepare(`INSERT INTO ItensVenda (id, venda_id, produto_id, quantidade, preco_unitario, subtotal) VALUES (1, 1, 1, 5, 16.0, 80.0);`).run();
+  db.prepare(`INSERT INTO PagamentoVenda (id, venda_id, gerente_id, forma_pagamento, valor_pago, valor_taxa, valor_liquido, status) VALUES (1, 1, 1, 'pix', 50.0, 0.50, 49.50, 'confirmado');`).run();
+  db.prepare(`INSERT INTO PagamentoVenda (id, venda_id, gerente_id, forma_pagamento, valor_pago, valor_taxa, valor_liquido, status) VALUES (2, 1, 1, 'dinheiro', 30.0, 0.0, 30.0, 'confirmado');`).run();
+  db.prepare(`INSERT INTO MovimentacaoEstoque (gerente_id, produto_id, tipo_operacao, quantidade, saldo_anterior, saldo_novo, custo_unitario, justificativa) VALUES (1, 1, 'SAIDA_VENDA', -5, 20, 15, 10.0, 'Venda #1');`).run();
+  db.prepare('UPDATE Produto SET estoque_atual = 15 WHERE id = 1').run();
+
+  // 2. Venda 2 com Cartão de Crédito (R$ 48,00 = 3 un * 16.00)
+  db.prepare(`INSERT INTO Venda (id, gerente_id, subtotal, desconto, total, status, canal_venda) VALUES (2, 1, 48.0, 0.0, 48.0, 'concluida', 'delivery');`).run();
+  db.prepare(`INSERT INTO ItensVenda (id, venda_id, produto_id, quantidade, preco_unitario, subtotal) VALUES (2, 2, 1, 3, 16.0, 48.0);`).run();
+  // Taxa cartão: 3.49% de 48 + 0.30 fixo = 1.68 + 0.30 = 1.98. Líquido = 46.02
+  const calcCred = calcularTaxaMonetaria(48.0, 3.49, 0.30);
+  assert.equal(calcCred.valorTaxa, 1.98);
+  assert.equal(calcCred.valorLiquido, 46.02);
+  db.prepare(`INSERT INTO PagamentoVenda (id, venda_id, gerente_id, forma_pagamento, valor_pago, valor_taxa, valor_liquido, status) VALUES (3, 2, 1, 'cartao_credito', 48.0, 1.98, 46.02, 'confirmado');`).run();
+  db.prepare(`INSERT INTO MovimentacaoEstoque (gerente_id, produto_id, tipo_operacao, quantidade, saldo_anterior, saldo_novo, custo_unitario, justificativa) VALUES (1, 1, 'SAIDA_VENDA', -3, 15, 12, 10.0, 'Venda #2');`).run();
+  db.prepare('UPDATE Produto SET estoque_atual = 12 WHERE id = 1').run();
+
+  // 3. Cancelamento da Venda 2 com retorno ao estoque e estorno de taxas
+  db.prepare("UPDATE Venda SET status = 'cancelada' WHERE id = 2").run();
+  db.prepare("UPDATE PagamentoVenda SET status = 'estornado' WHERE venda_id = 2").run();
+  db.prepare(`INSERT INTO CancelamentoVenda (venda_id, gerente_id, gerente_responsavel_id, motivo_justificativa) VALUES (2, 1, 1, 'Cancelado pelo delivery');`).run();
+  db.prepare(`INSERT INTO MovimentacaoEstoque (gerente_id, produto_id, tipo_operacao, quantidade, saldo_anterior, saldo_novo, custo_unitario, justificativa) VALUES (1, 1, 'CANCELAMENTO_VENDA', 3, 12, 15, 10.0, 'Cancelamento Venda #2');`).run();
+  db.prepare('UPDATE Produto SET estoque_atual = 15 WHERE id = 1').run();
+
+  // 4. Devolução parcial na Venda 1: 1 unidade apta para revenda e 1 unidade avariada
+  db.prepare(`INSERT INTO DevolucaoVenda (id, venda_id, gerente_id, valor_estornado, motivo) VALUES (1, 1, 1, 32.0, 'Devolução mista');`).run();
+  db.prepare(`INSERT INTO ItensDevolucao (devolucao_id, produto_id, quantidade, valor_unitario, subtotal_estornado, apto_revenda) VALUES (1, 1, 1, 16.0, 16.0, 1);`).run();
+  db.prepare(`INSERT INTO ItensDevolucao (devolucao_id, produto_id, quantidade, valor_unitario, subtotal_estornado, apto_revenda) VALUES (1, 1, 1, 16.0, 16.0, 0);`).run();
+  
+  // Apto volta ao estoque (15 -> 16)
+  db.prepare(`INSERT INTO MovimentacaoEstoque (gerente_id, produto_id, tipo_operacao, quantidade, saldo_anterior, saldo_novo, custo_unitario, justificativa) VALUES (1, 1, 'DEVOLUCAO', 1, 15, 16, 10.0, 'Devolução apta');`).run();
+  db.prepare('UPDATE Produto SET estoque_atual = 16 WHERE id = 1').run();
+
+  // Avariado é registrado como PerdaEstoque (custo unitário 10.0, impacto 10.0) e no Kardex informativo
+  db.prepare(`
+    INSERT INTO PerdaEstoque (gerente_id, produto_id, quantidade, motivo_tipo, justificativa, custo_unitario_aplicado, impacto_financeiro, usuario_id)
+    VALUES (1, 1, 1, 'avaria', 'Pacote furado na devolução', 10.0, 10.0, 1);
+  `).run();
+  db.prepare(`INSERT INTO MovimentacaoEstoque (gerente_id, produto_id, tipo_operacao, quantidade, saldo_anterior, saldo_novo, custo_unitario, justificativa) VALUES (1, 1, 'AVARIA', 0, 16, 16, 10.0, 'Avaria em devolução');`).run();
+  db.prepare("UPDATE Venda SET status = 'devolvida_parcial' WHERE id = 1").run();
+
+  // 5. Validação da Auditoria do Kardex (Saldo reconstruído deve bater exatamente com estoque_atual = 16)
+  const movs = db.prepare('SELECT * FROM MovimentacaoEstoque WHERE produto_id = 1 ORDER BY id ASC').all();
+  let saldoReconst = movs[0].saldo_anterior;
+  for (const m of movs) {
+    saldoReconst = round3(saldoReconst + m.quantidade);
+  }
+  const prodAtual = db.prepare('SELECT estoque_atual FROM Produto WHERE id = 1').get();
+  assert.equal(prodAtual.estoque_atual, 16.0);
+  assert.equal(saldoReconst, 16.0, 'Kardex reconstruído deve coincidir rigorosamente com saldo físico atual (16.0)');
+
+  // 6. Validação Contábil do Faturamento Elegível e Taxas
+  const fatElegivel = db.prepare(`SELECT SUM(total) as fat FROM Venda WHERE status != 'cancelada'`).get();
+  assert.equal(fatElegivel.fat, 80.0, 'Venda cancelada (R$ 48) não pode compor o faturamento');
+
+  const taxasElegiveis = db.prepare(`
+    SELECT SUM(pv.valor_taxa) as taxas
+    FROM PagamentoVenda pv
+    JOIN Venda v ON v.id = pv.venda_id
+    WHERE v.status != 'cancelada' AND pv.status = 'confirmado';
+  `).get();
+  assert.equal(taxasElegiveis.taxas, 0.50, 'Apenas taxa do PIX (0.50) da Venda 1 é elegível; taxa do cartão (1.98) foi estornada');
+
+  // 7. Validação do Relatório de Perdas consolidado
+  const perdaDev = db.prepare('SELECT * FROM PerdaEstoque WHERE produto_id = 1').get();
+  assert.equal(perdaDev.motivo_tipo, 'avaria');
+  assert.equal(perdaDev.impacto_financeiro, 10.0);
+  assert.equal(perdaDev.custo_unitario_aplicado, 10.0);
+});
+
