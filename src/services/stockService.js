@@ -15,6 +15,29 @@ import {
 // ========================================================
 
 /**
+ * Normaliza a data de validade para AAAA-MM-DD. Aceita AAAA-MM-DD ou DD/MM/AAAA.
+ * Retorna null se vazia; lança erro se o formato ou a data forem inválidos.
+ */
+export function normalizarDataValidade(valor) {
+  if (valor == null || !String(valor).trim()) return null;
+  const txt = String(valor).trim();
+  let ano, mes, dia;
+  let m = txt.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) {
+    [, ano, mes, dia] = m;
+  } else if ((m = txt.match(/^(\d{2})\/(\d{2})\/(\d{4})$/))) {
+    [, dia, mes, ano] = m;
+  } else {
+    throw new Error(`Data de validade "${txt}" inválida. Use AAAA-MM-DD ou DD/MM/AAAA.`);
+  }
+  const d = new Date(Date.UTC(+ano, +mes - 1, +dia));
+  if (d.getUTCFullYear() !== +ano || d.getUTCMonth() !== +mes - 1 || d.getUTCDate() !== +dia) {
+    throw new Error(`Data de validade "${txt}" não existe no calendário.`);
+  }
+  return `${ano}-${mes}-${dia}`;
+}
+
+/**
  * Inicializa tabelas do módulo de estoque, fornecedores, entradas, kardex e perdas
  */
 export async function initStockTables(db) {
@@ -98,6 +121,42 @@ export async function initStockTables(db) {
     CREATE INDEX IF NOT EXISTS idx_mov_produto_data ON MovimentacaoEstoque(produto_id, data_movimentacao DESC);
     CREATE INDEX IF NOT EXISTS idx_mov_origem ON MovimentacaoEstoque(origem_tipo, origem_id);
     CREATE INDEX IF NOT EXISTS idx_perda_produto ON PerdaEstoque(produto_id);
+
+    CREATE TABLE IF NOT EXISTS LoteEstoque (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      gerente_id INTEGER NOT NULL,
+      produto_id INTEGER NOT NULL,
+      entrada_id INTEGER,
+      item_entrada_id INTEGER,
+      numero_lote TEXT NOT NULL,
+      data_entrada TEXT NOT NULL DEFAULT (datetime('now')),
+      data_validade TEXT,
+      quantidade_inicial REAL NOT NULL,
+      quantidade_saldo REAL NOT NULL,
+      custo_unitario REAL NOT NULL,
+      status TEXT NOT NULL DEFAULT 'ativo' CHECK(status IN ('ativo', 'esgotado', 'vencido')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (produto_id) REFERENCES Produto(id),
+      FOREIGN KEY (entrada_id) REFERENCES EntradaMercadoria(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_lote_produto_status ON LoteEstoque(produto_id, status);
+    CREATE INDEX IF NOT EXISTS idx_lote_validade ON LoteEstoque(data_validade ASC);
+
+    -- Rastreabilidade: de quais lotes saiu cada baixa (venda, perda), para estornos exatos
+    CREATE TABLE IF NOT EXISTS BaixaLote (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      gerente_id INTEGER NOT NULL,
+      lote_id INTEGER NOT NULL,
+      produto_id INTEGER NOT NULL,
+      origem_tipo TEXT NOT NULL,
+      origem_id INTEGER,
+      item_venda_id INTEGER,
+      quantidade REAL NOT NULL,
+      quantidade_restaurada REAL NOT NULL DEFAULT 0.0,
+      data_baixa TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (lote_id) REFERENCES LoteEstoque(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_baixa_lote_origem ON BaixaLote(origem_tipo, origem_id, item_venda_id);
   `);
 }
 
@@ -297,6 +356,7 @@ export async function registrarEntradaMercadorias(dadosEntrada, gerenteId, dbOve
       const c = parseFloat(item.custoUnitario);
       if (isNaN(q) || q <= 0) throw new Error(`Quantidade inválida para o produto ID ${item.produtoId}.`);
       if (isNaN(c) || c < 0) throw new Error(`Custo inválido para o produto ID ${item.produtoId}.`);
+      normalizarDataValidade(item.dataValidade); // lança erro se a validade for inválida
       valorTotalNota += (q * c);
     }
     valorTotalNota = parseFloat(valorTotalNota.toFixed(2));
@@ -354,6 +414,31 @@ export async function registrarEntradaMercadorias(dadosEntrada, gerenteId, dbOve
           novoPmp,
           estoqueAnterior,
           novoEstoque
+        ]
+      );
+
+      // Registra o lote e prazo de validade vinculado à entrada de mercadoria
+      const numeroLote = (item.lote && String(item.lote).trim()) 
+        ? String(item.lote).trim() 
+        : `LOTE-${now.substring(0, 10).replace(/-/g, '')}-${item.produtoId}`;
+      const dataValidade = normalizarDataValidade(item.dataValidade);
+
+      await db.runAsync(
+        `INSERT INTO LoteEstoque (
+          gerente_id, produto_id, entrada_id, item_entrada_id, numero_lote, data_entrada,
+          data_validade, quantidade_inicial, quantidade_saldo, custo_unitario, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ativo');`,
+        [
+          gerenteId,
+          item.produtoId,
+          entradaId,
+          resItem.lastInsertRowId,
+          numeroLote,
+          now,
+          dataValidade,
+          qtdEntrada,
+          qtdEntrada,
+          custoEntrada
         ]
       );
 
@@ -498,6 +583,9 @@ export async function registrarPerdaEstoque(dadosPerda, gerenteId, dbOverride = 
       ]
     );
     perdaId = resPerda.lastInsertRowId;
+
+    // 2.1 Baixa nos lotes (PEPS/FEFO: o lote de validade mais próxima/vencido sai primeiro)
+    await baixarLotesFIFO(produtoId, qtdPerda, gerenteId, db, { tipo: 'perda', id: perdaId });
 
     // 3. Insere movimentação no Kardex
     const tipoKardex = `PERDA_${tipo.toUpperCase()}`;
@@ -773,4 +861,227 @@ export async function fetchRelatorioPerdasAvariasDetalhado(gerenteId, options = 
  */
 export async function fetchRelatorioPerdas(gerenteId, options = {}, dbOverride = null) {
   return await fetchRelatorioPerdasAvariasDetalhado(gerenteId, options, dbOverride);
+}
+
+// --------------------------------------------------------
+// 7. LOTES, CONTROLE DE VALIDADE & ALGORITMO PEPS / FIFO
+// --------------------------------------------------------
+
+/**
+ * Algoritmo de sugestão de saída no modelo PEPS/FIFO (Primeiro que Entra, Primeiro que Sai)
+ * Prioriza os lotes com data de validade mais próxima (FEFO) e data de entrada mais antiga (PEPS).
+ */
+export async function sugerirSaidaLotesFIFO(produtoId, quantidadeSolicitada, gerenteId, dbOverride = null) {
+  const db = dbOverride || await getDb();
+  const qSolicitada = parseFloat(quantidadeSolicitada);
+  if (isNaN(qSolicitada) || qSolicitada <= 0) {
+    throw new Error('A quantidade solicitada para sugestão PEPS/FIFO deve ser maior que zero.');
+  }
+
+  // Busca lotes com saldo positivo para o produto ordenados por:
+  // 1. Data de validade ASC (lotes a vencer primeiro saem primeiro)
+  // 2. Data de entrada ASC (lotes que entraram antes saem antes)
+  // 3. ID ASC (critério de desempate)
+  const lotes = await db.getAllAsync(
+    `SELECT * FROM LoteEstoque 
+     WHERE produto_id = ? AND gerente_id = ? AND quantidade_saldo > 0 AND status = 'ativo'
+     ORDER BY 
+       CASE WHEN data_validade IS NOT NULL AND data_validade != '' THEN 0 ELSE 1 END,
+       data_validade ASC,
+       data_entrada ASC,
+       id ASC;`,
+    [produtoId, gerenteId]
+  );
+
+  let restante = qSolicitada;
+  const sugestoes = [];
+  const alertas = [];
+  const hoje = new Date().toISOString().substring(0, 10);
+
+  for (const lote of lotes) {
+    if (restante <= 0.0001) break;
+
+    const qtdDisponivel = parseFloat(lote.quantidade_saldo);
+    const qtdAlocar = round3(Math.min(restante, qtdDisponivel));
+
+    let diasParaVencer = null;
+    let statusValidade = 'ok';
+
+    if (lote.data_validade) {
+      const dVal = lote.data_validade.substring(0, 10);
+      const diffMs = new Date(dVal).getTime() - new Date(hoje).getTime();
+      diasParaVencer = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+      if (diasParaVencer < 0) {
+        statusValidade = 'vencido';
+        alertas.push({
+          loteId: lote.id,
+          numeroLote: lote.numero_lote,
+          tipo: 'VENCIDO',
+          mensagem: `ATENÇÃO: O lote "${lote.numero_lote}" venceu há ${Math.abs(diasParaVencer)} dia(s) (${lote.data_validade})!`
+        });
+      } else if (diasParaVencer <= 30) {
+        statusValidade = 'proximo_vencimento';
+        alertas.push({
+          loteId: lote.id,
+          numeroLote: lote.numero_lote,
+          tipo: 'PROXIMO_VENCIMENTO',
+          mensagem: `Aviso: O lote "${lote.numero_lote}" vencerá em ${diasParaVencer} dia(s) (${lote.data_validade}). Sugerido para giro prioritário.`
+        });
+      }
+    }
+
+    sugestoes.push({
+      loteId: lote.id,
+      numeroLote: lote.numero_lote,
+      dataEntrada: lote.data_entrada,
+      dataValidade: lote.data_validade,
+      quantidadeSugerida: qtdAlocar,
+      saldoDisponivel: qtdDisponivel,
+      custoUnitario: lote.custo_unitario,
+      diasParaVencer,
+      statusValidade
+    });
+
+    restante = round3(restante - qtdAlocar);
+  }
+
+  const quantidadeAtendida = round3(qSolicitada - restante);
+
+  if (restante > 0.0001) {
+    alertas.push({
+      tipo: 'SALDO_INSUFICIENTE_LOTES',
+      mensagem: `Atenção: Saldo em lotes controlados (${quantidadeAtendida}) é inferior à quantidade solicitada (${qSolicitada}). Faltam ${round3(restante)} un.`
+    });
+  }
+
+  return {
+    produtoId,
+    quantidadeSolicitada: qSolicitada,
+    quantidadeAtendida,
+    atendimentoCompleto: restante <= 0.0001,
+    sugestoes,
+    alertas
+  };
+}
+
+/**
+ * Consome e dá baixa nos lotes no modelo PEPS/FIFO durante checkout ou saída
+ */
+export async function baixarLotesFIFO(produtoId, quantidade, gerenteId, dbOverride = null, origem = null) {
+  const db = dbOverride || await getDb();
+  const sugestao = await sugerirSaidaLotesFIFO(produtoId, quantidade, gerenteId, db);
+
+  const baixasRealizadas = [];
+
+  for (const s of sugestao.sugestoes) {
+    const novoSaldo = round3(s.saldoDisponivel - s.quantidadeSugerida);
+    const novoStatus = novoSaldo <= 0.0001 ? 'esgotado' : 'ativo';
+
+    await db.runAsync(
+      `UPDATE LoteEstoque 
+       SET quantidade_saldo = ?, status = ?
+       WHERE id = ? AND gerente_id = ?;`,
+      [Math.max(0, novoSaldo), novoStatus, s.loteId, gerenteId]
+    );
+
+    if (origem && origem.tipo) {
+      await db.runAsync(
+        `INSERT INTO BaixaLote (gerente_id, lote_id, produto_id, origem_tipo, origem_id, item_venda_id, quantidade)
+         VALUES (?, ?, ?, ?, ?, ?, ?);`,
+        [gerenteId, s.loteId, produtoId, origem.tipo, origem.id ?? null, origem.itemVendaId ?? null, s.quantidadeSugerida]
+      );
+    }
+
+    baixasRealizadas.push({
+      loteId: s.loteId,
+      numeroLote: s.numeroLote,
+      quantidadeBaixada: s.quantidadeSugerida,
+      saldoRestanteLote: Math.max(0, novoSaldo),
+      statusLote: novoStatus
+    });
+  }
+
+  return {
+    produtoId,
+    quantidadeTotalBaixada: sugestao.quantidadeAtendida,
+    baixas: baixasRealizadas,
+    alertas: sugestao.alertas
+  };
+}
+
+/**
+ * Devolve aos lotes de origem a quantidade baixada por um item de venda (cancelamento ou
+ * devolução apta para revenda). Restaura primeiro os lotes consumidos por último.
+ */
+export async function restaurarLotesItemVenda(itemVendaId, quantidade, gerenteId, dbOverride = null) {
+  const db = dbOverride || await getDb();
+  let restante = round3(parseFloat(quantidade) || 0);
+  if (restante <= 0) return { quantidadeRestaurada: 0 };
+
+  const baixas = await db.getAllAsync(
+    `SELECT * FROM BaixaLote
+     WHERE item_venda_id = ? AND gerente_id = ? AND origem_tipo = 'venda' AND quantidade > quantidade_restaurada
+     ORDER BY id DESC;`,
+    [itemVendaId, gerenteId]
+  );
+
+  for (const b of baixas) {
+    if (restante <= 0.0001) break;
+    const qtd = round3(Math.min(restante, b.quantidade - b.quantidade_restaurada));
+    await db.runAsync(
+      'UPDATE BaixaLote SET quantidade_restaurada = quantidade_restaurada + ? WHERE id = ?;',
+      [qtd, b.id]
+    );
+    await db.runAsync(
+      `UPDATE LoteEstoque SET quantidade_saldo = quantidade_saldo + ?, status = 'ativo'
+       WHERE id = ? AND gerente_id = ?;`,
+      [qtd, b.lote_id, gerenteId]
+    );
+    restante = round3(restante - qtd);
+  }
+
+  return { quantidadeRestaurada: round3((parseFloat(quantidade) || 0) - restante) };
+}
+
+/**
+ * Busca histórico e saldos de lotes de um produto
+ */
+export async function fetchLotesProduto(produtoId, gerenteId, dbOverride = null) {
+  const db = dbOverride || await getDb();
+  return await db.getAllAsync(
+    `SELECT * FROM LoteEstoque 
+     WHERE produto_id = ? AND gerente_id = ? 
+     ORDER BY CASE WHEN status = 'ativo' THEN 0 ELSE 1 END, data_validade ASC, id ASC;`,
+    [produtoId, gerenteId]
+  );
+}
+
+/**
+ * Relatório de lotes com validade próxima ou vencidos
+ */
+export async function fetchLotesProximosVencimento(gerenteId, diasLimite = 30, dbOverride = null) {
+  const db = dbOverride || await getDb();
+  const hoje = new Date().toISOString().substring(0, 10);
+
+  const rows = await db.getAllAsync(
+    `SELECT le.*, p.nome as produto_nome, p.categoria as produto_categoria 
+     FROM LoteEstoque le
+     JOIN Produto p ON p.id = le.produto_id
+     WHERE le.gerente_id = ? AND le.quantidade_saldo > 0 AND le.data_validade IS NOT NULL AND le.data_validade != ''
+     ORDER BY le.data_validade ASC;`,
+    [gerenteId]
+  );
+
+  return rows.map(r => {
+    const diffMs = new Date(r.data_validade.substring(0, 10)).getTime() - new Date(hoje).getTime();
+    const dias = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+    return {
+      ...r,
+      diasParaVencer: dias,
+      vencido: dias < 0,
+      proximoVencimento: dias >= 0 && dias <= diasLimite,
+      impactoFinanceiro: round2(r.quantidade_saldo * r.custo_unitario)
+    };
+  }).filter(r => r.vencido || r.proximoVencimento);
 }

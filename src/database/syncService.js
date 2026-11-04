@@ -42,9 +42,32 @@ export async function getSyncQueueCount() {
   }
 }
 
+/**
+ * Detecta se o erro decorre de ausência de rede, falha de DNS ou host remoto inacessível
+ */
+export function isNetworkError(err) {
+  if (!err) return false;
+  const msg = (err.message || String(err)).toLowerCase();
+  return (
+    msg.includes('unknownhostexception') ||
+    msg.includes('network request failed') ||
+    msg.includes('failed to fetch') ||
+    msg.includes('fetch failed') ||
+    msg.includes('network error') ||
+    msg.includes('enotfound') ||
+    msg.includes('econnrefused') ||
+    msg.includes('etimedout') ||
+    msg.includes('timeout') ||
+    msg.includes('no address associated with hostname') ||
+    msg.includes('abort')
+  );
+}
+
 // Envia uma única operação de upsert ou delete para a tabela correspondente no Supabase
 export async function syncToSupabase(tableName, operation, payload) {
-  if (!isSupabaseConfigured()) return false;
+  if (!isSupabaseConfigured()) {
+    return { success: false, isNetworkError: false, message: 'Supabase não configurado' };
+  }
 
   try {
     if (operation === 'upsert') {
@@ -69,10 +92,15 @@ export async function syncToSupabase(tableName, operation, payload) {
       if (error) throw error;
     }
 
-    return true;
+    return { success: true, isNetworkError: false };
   } catch (err) {
-    console.error(`[SyncService] Falha ao sincronizar ${operation} em ${tableName}:`, err.message);
-    return false;
+    const isNet = isNetworkError(err);
+    if (isNet) {
+      console.warn(`[SyncService] Host remoto inacessível ou offline (${tableName}):`, err.message || err);
+    } else {
+      console.error(`[SyncService] Falha ao sincronizar ${operation} em ${tableName}:`, err.message || err);
+    }
+    return { success: false, isNetworkError: isNet, error: err };
   }
 }
 
@@ -109,12 +137,17 @@ export async function processSyncQueue() {
         continue;
       }
 
-      const success = await syncToSupabase(item.table_name, item.operation, payload);
+      const res = await syncToSupabase(item.table_name, item.operation, payload);
 
-      if (success) {
+      if (res.success) {
         await db.runAsync('DELETE FROM sync_queue WHERE id = ?;', [item.id]);
         console.log(`[SyncService] ✓ ${item.operation} em ${item.table_name} (id: ${item.id}) sincronizado.`);
+      } else if (res.isNetworkError) {
+        // Circuit breaker: se a rede ou o host falhou, interrompe a fila para não queimar tentativas e não floodar logs
+        console.warn(`[SyncService] Conexão remota indisponível. Fila de sincronização suspensa aguardando restabelecimento de rede.`);
+        break;
       } else {
+        // Erro de schema ou dados inválidos: incrementa tentativas
         const newRetries = item.retries + 1;
         if (newRetries >= MAX_RETRIES) {
           await db.runAsync('DELETE FROM sync_queue WHERE id = ?;', [item.id]);
@@ -142,7 +175,9 @@ export async function checkNetworkAndSync() {
       console.log('[SyncService] Sem rede — sync adiado.');
     }
   } catch (err) {
-    console.error('[SyncService] Erro ao verificar rede:', err);
+    if (!isNetworkError(err)) {
+      console.warn('[SyncService] Erro ao verificar rede:', err);
+    }
   }
 }
 
@@ -155,15 +190,17 @@ export async function syncOrEnqueue(tableName, operation, payload) {
     const isOnline = networkState.isConnected && networkState.isInternetReachable;
 
     if (isOnline) {
-      const success = await syncToSupabase(tableName, operation, payload);
-      if (!success) {
+      const res = await syncToSupabase(tableName, operation, payload);
+      if (!res.success) {
         await enqueueSyncOperation(tableName, operation, payload);
       }
     } else {
       await enqueueSyncOperation(tableName, operation, payload);
     }
   } catch (err) {
-    console.error('[SyncService] Erro em syncOrEnqueue:', err);
+    if (!isNetworkError(err)) {
+      console.error('[SyncService] Erro em syncOrEnqueue:', err);
+    }
     await enqueueSyncOperation(tableName, operation, payload);
   }
 }

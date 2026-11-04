@@ -10,6 +10,8 @@ import {
   registrarMovimentacaoKardex 
 } from './stockService';
 import { estornarFiado } from './clientService';
+import { baixarLotesFIFO, restaurarLotesItemVenda } from './stockService';
+import { validarCaixaAtivoParaCheckout, registrarVendaNoCaixa, estornarVendaDoCaixa } from './cashService';
 import { 
   round2, 
   round3, 
@@ -72,6 +74,9 @@ export async function initSaleTables(db) {
   } catch (e) {}
 
   // Ajusta colunas na tabela ItensVenda
+  try {
+    await db.execAsync("ALTER TABLE ItensVenda ADD COLUMN gerente_id INTEGER DEFAULT 1;");
+  } catch (e) {}
   try {
     await db.execAsync("ALTER TABLE ItensVenda ADD COLUMN quantidade_devolvida REAL NOT NULL DEFAULT 0.0;");
   } catch (e) {}
@@ -230,6 +235,12 @@ export async function finalizarVendaCompleta(dadosVenda, gerenteId, dbOverride =
     dataVenda = null
   } = dadosVenda;
 
+  // 0. Bloqueio do checkout sem caixa ativo (auditoria por operador)
+  let turnoCaixa = null;
+  if (usuarioId) {
+    turnoCaixa = await validarCaixaAtivoParaCheckout(usuarioId, gerenteId, db);
+  }
+
   // 1. Validação do carrinho no backend
   const carrinhoValidado = await validarERecalcularCarrinho(carrinho, descontoGlobal, gerenteId, db);
 
@@ -242,6 +253,20 @@ export async function finalizarVendaCompleta(dadosVenda, gerenteId, dbOverride =
     db
   );
 
+  // Garante que ItensVenda possua todas as colunas necessárias em tempo de execução
+  try {
+    await db.execAsync("ALTER TABLE ItensVenda ADD COLUMN gerente_id INTEGER DEFAULT 1;");
+  } catch (e) {}
+  try {
+    await db.execAsync("ALTER TABLE ItensVenda ADD COLUMN subtotal REAL NOT NULL DEFAULT 0.0;");
+  } catch (e) {}
+  try {
+    await db.execAsync("ALTER TABLE ItensVenda ADD COLUMN desconto_item REAL NOT NULL DEFAULT 0.0;");
+  } catch (e) {}
+  try {
+    await db.execAsync("ALTER TABLE ItensVenda ADD COLUMN quantidade_devolvida REAL NOT NULL DEFAULT 0.0;");
+  } catch (e) {}
+
   let vendaId = null;
   const now = dataVenda || new Date().toISOString();
 
@@ -249,8 +274,8 @@ export async function finalizarVendaCompleta(dadosVenda, gerenteId, dbOverride =
     // 3. Inserir cabeçalho da Venda
     const resVenda = await db.runAsync(
       `INSERT INTO Venda 
-       (gerente_id, usuario_id, cliente_id, canal_venda, data_venda, valor_bruto, desconto, valor_total, total_taxas, valor_liquido, valor_cmv, valor_opex, valor_lucro, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'concluida');`,
+       (gerente_id, usuario_id, cliente_id, canal_venda, data_venda, valor_bruto, desconto, valor_total, total_taxas, valor_liquido, valor_cmv, valor_opex, valor_lucro, status, turno_caixa_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'concluida', ?);`,
       [
         gerenteId,
         usuarioId,
@@ -264,7 +289,8 @@ export async function finalizarVendaCompleta(dadosVenda, gerenteId, dbOverride =
         pagamentosValidados.totalLiquido,
         carrinhoValidado.cmvEstimado,
         0.0, // OpEx adicional se houver
-        parseFloat((pagamentosValidados.totalLiquido - carrinhoValidado.cmvEstimado).toFixed(2))
+        parseFloat((pagamentosValidados.totalLiquido - carrinhoValidado.cmvEstimado).toFixed(2)),
+        turnoCaixa ? turnoCaixa.id : null
       ]
     );
     vendaId = resVenda.lastInsertRowId;
@@ -287,8 +313,8 @@ export async function finalizarVendaCompleta(dadosVenda, gerenteId, dbOverride =
         [novoEstoque, item.produto_id, gerenteId]
       );
 
-      await db.runAsync(
-        `INSERT INTO ItensVenda 
+      const resItem = await db.runAsync(
+        `INSERT INTO ItensVenda
          (gerente_id, venda_id, produto_id, quantidade, quantidade_devolvida, preco_unitario, preco_custo_unitario, desconto_item, subtotal)
          VALUES (?, ?, ?, ?, 0.0, ?, ?, ?, ?);`,
         [
@@ -302,6 +328,13 @@ export async function finalizarVendaCompleta(dadosVenda, gerenteId, dbOverride =
           item.subtotal
         ]
       );
+
+      // Baixa nos lotes pelo algoritmo PEPS/FIFO, rastreada por item para estornos exatos
+      await baixarLotesFIFO(item.produto_id, item.quantidade, gerenteId, db, {
+        tipo: 'venda',
+        id: vendaId,
+        itemVendaId: resItem.lastInsertRowId
+      });
 
       // Movimentação no Kardex
       await registrarMovimentacaoKardex({
@@ -322,6 +355,25 @@ export async function finalizarVendaCompleta(dadosVenda, gerenteId, dbOverride =
 
     // 5. Inserir pagamentos individuais e debitar fiado na caderneta se houver
     await registrarPagamentosVenda(vendaId, pagamentosValidados.pagamentos, clienteId, gerenteId, db);
+
+    // 6. Atualiza o caixa com recebimentos em dinheiro e outros meios
+    if (turnoCaixa) {
+      const valorDinheiro = pagamentosValidados.pagamentos
+        .filter(p => p.forma_pagamento === 'dinheiro')
+        .reduce((acc, p) => round2(acc + (parseFloat(p.valor_bruto) || 0)), 0);
+      const valorOutros = pagamentosValidados.pagamentos
+        .filter(p => p.forma_pagamento !== 'dinheiro')
+        .reduce((acc, p) => round2(acc + (parseFloat(p.valor_bruto) || 0)), 0);
+
+      await registrarVendaNoCaixa({
+        turnoId: turnoCaixa.id,
+        vendaId,
+        valorDinheiro,
+        valorOutros,
+        operadorId: usuarioId,
+        gerenteId
+      }, db);
+    }
   };
 
   if (typeof db.withTransactionAsync === 'function') {
@@ -435,6 +487,25 @@ export async function cancelarVendaComAutorizacao(dadosCancelamento, dbOverride 
 
       await estornarPagamentosVenda(vendaId, venda.cliente_id, gerenteId, db, fiadoRestanteEstornar);
 
+      // Estornar do caixa os recebimentos em dinheiro se a venda foi vinculada a um turno
+      if (venda.turno_caixa_id) {
+        const pagsVenda = await db.getAllAsync(
+          "SELECT * FROM PagamentoVenda WHERE venda_id = ? AND forma_pagamento = 'dinheiro' AND estornado = 1;",
+          [vendaId]
+        );
+        const valorDinheiroEstorno = pagsVenda.reduce((acc, p) => round2(acc + (parseFloat(p.valor_bruto) || 0)), 0);
+        if (valorDinheiroEstorno > 0) {
+          await estornarVendaDoCaixa({
+            turnoId: venda.turno_caixa_id,
+            vendaId,
+            valorDinheiro: valorDinheiroEstorno,
+            operadorId: usuarioId || gerenteId,
+            gerenteId,
+            justificativa: justificativa.trim()
+          }, db);
+        }
+      }
+
       // 4. Reverter o estoque dos itens vendidos via Kardex (apenas o que ainda não foi devolvido)
       const itens = await db.getAllAsync(
         'SELECT * FROM ItensVenda WHERE venda_id = ?;',
@@ -456,6 +527,8 @@ export async function cancelarVendaComAutorizacao(dadosCancelamento, dbOverride 
           'UPDATE Produto SET estoque = ?, updated_at = datetime(\'now\') WHERE id = ? AND gerente_id = ?;',
           [saldoResultante, item.produto_id, gerenteId]
         );
+
+        await restaurarLotesItemVenda(item.id, qtdRetorno, gerenteId, db);
 
         await registrarMovimentacaoKardex({
           gerenteId,
@@ -639,6 +712,8 @@ export async function processarDevolucaoParcial(dadosDevolucao, gerenteId, dbOve
             'UPDATE Produto SET estoque = ?, updated_at = datetime(\'now\') WHERE id = ? AND gerente_id = ?;',
             [saldoResultante, itemVenda.produto_id, gerenteId]
           );
+
+          await restaurarLotesItemVenda(itemVenda.id, qtdDevolver, gerenteId, db);
 
           await registrarMovimentacaoKardex({
             gerenteId,

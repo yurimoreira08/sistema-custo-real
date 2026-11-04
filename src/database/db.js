@@ -2,7 +2,22 @@ import { initSyncQueue, syncOrEnqueue } from './syncService';
 import { getDb } from './dbInstance';
 import { hashPassword } from '../utils/crypto';
 import { supabase, isSupabaseConfigured } from './supabaseClient';
-import { initClienteTable, saveCliente, fetchClientes, getClienteById, validateLimiteFiado, debitarFiado, estornarFiado } from '../services/clientService';
+import { initClienteTable, saveCliente, fetchClientes, fetchClientesInadimplentes, getClienteById, validateLimiteFiado, debitarFiado, estornarFiado, alterarBloqueioInadimplente } from '../services/clientService';
+import { 
+  initCashTables, 
+  abrirTurnoCaixa, 
+  bloquearTurnoCaixa, 
+  desbloquearTurnoCaixa, 
+  fecharTurnoCaixa, 
+  registrarSuprimentoSangria, 
+  validarCaixaAtivoParaCheckout, 
+  registrarVendaNoCaixa, 
+  estornarVendaDoCaixa, 
+  obterTurnoPorId, 
+  obterTurnoAtivo, 
+  fetchHistoricoTurnos, 
+  auditarTurnoCaixa 
+} from '../services/cashService';
 import { 
   initPaymentTables, 
   seedFormasPagamento, 
@@ -29,7 +44,11 @@ import {
   fetchRelatorioPerdas,
   auditarSaldoKardex,
   auditarTodosProdutosKardex,
-  fetchRelatorioPerdasAvariasDetalhado 
+  fetchRelatorioPerdasAvariasDetalhado,
+  sugerirSaidaLotesFIFO,
+  baixarLotesFIFO,
+  fetchLotesProduto,
+  fetchLotesProximosVencimento 
 } from '../services/stockService';
 import { 
   initSaleTables, 
@@ -43,11 +62,13 @@ import {
 // Re-exportações de serviços para disponibilidade global
 export {
   // Clientes e Fiado
-  saveCliente, fetchClientes, getClienteById, validateLimiteFiado, debitarFiado, estornarFiado,
+  saveCliente, fetchClientes, fetchClientesInadimplentes, getClienteById, validateLimiteFiado, debitarFiado, estornarFiado, alterarBloqueioInadimplente,
+  // Turnos de Caixa, Auditoria e Bloqueio
+  abrirTurnoCaixa, bloquearTurnoCaixa, desbloquearTurnoCaixa, fecharTurnoCaixa, registrarSuprimentoSangria, validarCaixaAtivoParaCheckout, registrarVendaNoCaixa, estornarVendaDoCaixa, obterTurnoPorId, obterTurnoAtivo, fetchHistoricoTurnos, auditarTurnoCaixa,
   // Pagamentos, Taxas, Lucro Real e Auditoria Contábil (Yuri Mauriz)
   fetchFormasPagamento, saveFormaPagamentoConfig, calcularTaxaPagamento, validarPagamentosMistos, registrarPagamentosVenda, estornarPagamentosVenda, fetchPagamentosVenda, apurarLucroReal, auditarConsistenciaContabil,
   // Estoque, Fornecedores, Kardex, PMP e Auditoria de Kardex / Perdas (Zé Neto)
-  saveFornecedor, fetchFornecedores, getFornecedorById, registrarMovimentacaoKardex, fetchKardex, calcularNovoPMP, registrarEntradaMercadorias, registrarPerdaEstoque, fetchRelatorioPerdas, auditarSaldoKardex, auditarTodosProdutosKardex, fetchRelatorioPerdasAvariasDetalhado,
+  saveFornecedor, fetchFornecedores, getFornecedorById, registrarMovimentacaoKardex, fetchKardex, calcularNovoPMP, registrarEntradaMercadorias, registrarPerdaEstoque, fetchRelatorioPerdas, auditarSaldoKardex, auditarTodosProdutosKardex, fetchRelatorioPerdasAvariasDetalhado, sugerirSaidaLotesFIFO, baixarLotesFIFO, fetchLotesProduto, fetchLotesProximosVencimento,
   // Vendas, Carrinho, Cancelamento e Devolução (Yuri Moreira)
   validarERecalcularCarrinho, finalizarVendaCompleta, cancelarVendaComAutorizacao, processarDevolucaoParcial, withSaleLock
 };
@@ -109,6 +130,7 @@ export async function initializeDatabase() {
 
     await db.execAsync(`
       CREATE TABLE IF NOT EXISTS ItensVenda (
+        gerente_id INTEGER DEFAULT 1,
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         venda_id INTEGER NOT NULL,
         produto_id INTEGER NOT NULL,
@@ -155,6 +177,18 @@ export async function initializeDatabase() {
       await db.execAsync("ALTER TABLE Venda ADD COLUMN updated_at TEXT;");
     } catch (e) {}
     try {
+      await db.execAsync("ALTER TABLE ItensVenda ADD COLUMN gerente_id INTEGER DEFAULT 1;");
+    } catch (e) {}
+    try {
+      await db.execAsync("ALTER TABLE ItensVenda ADD COLUMN subtotal REAL NOT NULL DEFAULT 0.0;");
+    } catch (e) {}
+    try {
+      await db.execAsync("ALTER TABLE ItensVenda ADD COLUMN desconto_item REAL NOT NULL DEFAULT 0.0;");
+    } catch (e) {}
+    try {
+      await db.execAsync("ALTER TABLE ItensVenda ADD COLUMN quantidade_devolvida REAL NOT NULL DEFAULT 0.0;");
+    } catch (e) {}
+    try {
       await db.execAsync("ALTER TABLE Configuracoes ADD COLUMN gerente_id INTEGER;");
     } catch (e) {}
     try {
@@ -172,6 +206,7 @@ export async function initializeDatabase() {
     await seedFormasPagamento(1, db);
     await initStockTables(db);
     await initSaleTables(db);
+    await initCashTables(db);
     await initSyncQueue();
 
     let seeded = false;

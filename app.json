@@ -40,7 +40,6 @@
       ],
       "expo-audio",
       "expo-sqlite",
-      "expo-status-bar",
       "expo-asset",
       [
         "expo-splash-screen",

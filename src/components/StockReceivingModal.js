@@ -9,7 +9,8 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
-  ActivityIndicator
+  ActivityIndicator,
+  Alert
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { fetchFornecedores, saveFornecedor, registrarEntradaMercadorias, calcularNovoPMP } from '../services/stockService';
@@ -41,6 +42,7 @@ export default function StockReceivingModal({
   const [qtdItem, setQtdItem] = useState('');
   const [custoItem, setCustoItem] = useState('');
   const [loteItem, setLoteItem] = useState('');
+  const [validadeItem, setValidadeItem] = useState('');
   
   const [loading, setLoading] = useState(false);
   const [erroMsg, setErroMsg] = useState('');
@@ -72,6 +74,7 @@ export default function StockReceivingModal({
     setQtdItem('');
     setCustoItem('');
     setLoteItem('');
+    setValidadeItem('');
     setErroMsg('');
     setShowAddFornecedor(false);
     setNovoFornNome('');
@@ -150,6 +153,7 @@ export default function StockReceivingModal({
         custoUnitario: c,
         custoTotal: parseFloat((q * c).toFixed(2)),
         lote: loteItem.trim() || null,
+        dataValidade: validadeItem.trim() || null,
         estoqueAtual,
         pmpAtual: custoAtual,
         novoPmpCalculado: novoPmp
@@ -159,6 +163,7 @@ export default function StockReceivingModal({
     setQtdItem('');
     setCustoItem('');
     setLoteItem('');
+    setValidadeItem('');
   };
 
   const handleRemoveItem = (index) => {
@@ -189,7 +194,8 @@ export default function StockReceivingModal({
             produtoId: i.produtoId,
             quantidade: i.quantidade,
             custoUnitario: i.custoUnitario,
-            lote: i.lote
+            lote: i.lote,
+            dataValidade: i.dataValidade
           })),
           responsavelId: usuarioId
         },
@@ -385,6 +391,16 @@ export default function StockReceivingModal({
                     onChangeText={setLoteItem}
                   />
                 </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.miniLabel}>Validade (DD/MM/AAAA):</Text>
+                  <TextInput
+                    style={styles.inputSmall}
+                    placeholder="31/12/2026"
+                    placeholderTextColor="#A0AEC0"
+                    value={validadeItem}
+                    onChangeText={setValidadeItem}
+                  />
+                </View>
               </View>
 
               <TouchableOpacity style={styles.addItemBtn} onPress={handleAddItem}>
@@ -400,7 +416,7 @@ export default function StockReceivingModal({
                 <View style={{ flex: 1 }}>
                   <Text style={styles.itemTitle}>{it.nome}</Text>
                   <Text style={styles.itemSubtext}>
-                    Qtd: {it.quantidade} un × {formatCurrency(it.custoUnitario)} = {formatCurrency(it.custoTotal)}
+                    Qtd: {it.quantidade} un × {formatCurrency(it.custoUnitario)} = {formatCurrency(it.custoTotal)}{it.lote ? ` • Lote: ${it.lote}` : ''}{it.dataValidade ? ` • Validade: ${it.dataValidade}` : ''}
                   </Text>
                   <Text style={styles.pmpBadge}>
                     PMP: {formatCurrency(it.pmpAtual)} ➔ Novo PMP: {formatCurrency(it.novoPmpCalculado)}

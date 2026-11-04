@@ -15,6 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { fetchClientes } from '../services/clientService';
 import { fetchFormasPagamento, calcularTaxaPagamento } from '../services/paymentService';
 import PaymentTaxConfigModal from './PaymentTaxConfigModal';
+import ClientsModal from './ClientsModal';
 
 export default function CheckoutPaymentModal({
   visible,
@@ -30,6 +31,7 @@ export default function CheckoutPaymentModal({
   const [canalVenda, setCanalVenda] = useState('balcao');
   const [descontoGlobal, setDescontoGlobal] = useState('0');
   const [showTaxConfigModal, setShowTaxConfigModal] = useState(false);
+  const [showClientsModal, setShowClientsModal] = useState(false);
 
   // Lista de pagamentos adicionados: [{ forma_pagamento, operadora, valor, taxa_percentual, taxa_fixa, valor_taxa, valor_liquido }]
   const [pagamentos, setPagamentos] = useState([]);
@@ -104,6 +106,26 @@ export default function CheckoutPaymentModal({
     if (isNaN(val) || val <= 0) {
       setErroMsg('Informe um valor de pagamento válido.');
       return;
+    }
+
+    if (selectedForma === 'fiado') {
+      if (!selectedClienteId) {
+        setErroMsg('Selecione um cliente para autorizar o pagamento em Fiado.');
+        return;
+      }
+      const cli = clientes.find(c => c.id === selectedClienteId);
+      if (cli) {
+        if (cli.bloqueado_inadimplente === 1) {
+          setErroMsg(`Venda bloqueada: O cliente "${cli.nome}" está com bloqueio preventivo de crédito (${cli.motivo_bloqueio || 'Inadimplência registrada'}).`);
+          return;
+        }
+        const saldoAtual = Number(cli.saldo_devedor) || 0;
+        const limite = Number(cli.limite_fiado) || 0;
+        if (limite > 0 && (saldoAtual + val) > (limite + 0.001)) {
+          setErroMsg(`Teto de crédito excedido para "${cli.nome}". Limite: R$ ${limite.toFixed(2)}, Saldo: R$ ${saldoAtual.toFixed(2)}, Tentativa: R$ ${val.toFixed(2)}.`);
+          return;
+        }
+      }
     }
 
     const cfg = formasConfig.find(
@@ -261,6 +283,12 @@ export default function CheckoutPaymentModal({
 
             {/* Seleção de Cliente */}
             <View style={styles.clientSection}>
+              <View style={{ flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', marginBottom: 4 }}>
+                <TouchableOpacity onPress={() => setShowClientsModal(true)} style={styles.adjustTaxesBtn}>
+                  <Ionicons name="people-outline" size={13} color="#1E63EC" />
+                  <Text style={styles.adjustTaxesBtnText}>Cadastrar / Limites</Text>
+                </TouchableOpacity>
+              </View>
               <Text style={styles.sectionLabel}>
                 Cliente {temFiado ? '(Obrigatório para Fiado *)' : '(Opcional)'}
               </Text>
@@ -426,6 +454,14 @@ export default function CheckoutPaymentModal({
               const currentForma = pagamentos[0]?.forma_pagamento || selectedForma || 'dinheiro';
               handleSelectForma(currentForma);
             }
+          }}
+        />
+        <ClientsModal
+          visible={showClientsModal}
+          gerenteId={gerenteId}
+          onClose={() => {
+            setShowClientsModal(false);
+            loadInitialData();
           }}
         />
       </KeyboardAvoidingView>

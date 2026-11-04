@@ -29,9 +29,10 @@ import StockReceivingModal from '../components/StockReceivingModal';
 import StockLossModal from '../components/StockLossModal';
 import KardexModal from '../components/KardexModal';
 import SuppliersModal from '../components/SuppliersModal';
+import ClientsModal from '../components/ClientsModal';
 
 const CATEGORIAS = ['Laticínios', 'Mercearia', 'Bebidas', 'Higiene', 'Limpeza', 'Outros'];
-export default function ProductsScreen() {
+export default function ProductsScreen() {
   const { products, logout, refreshData, settings, user } = useApp();
   
   const [search, setSearch] = useState('');
@@ -47,6 +48,7 @@ const CATEGORIAS = ['Laticínios', 'Mercearia', 'Bebidas', 'Higiene', 'Limpeza',
   const [lossModalVisible, setLossModalVisible] = useState(false);
   const [kardexModalVisible, setKardexModalVisible] = useState(false);
   const [suppliersModalVisible, setSuppliersModalVisible] = useState(false);
+  const [clientsModalVisible, setClientsModalVisible] = useState(false);
   const [selectedKardexProduct, setSelectedKardexProduct] = useState(null);
   
   const [productId, setProductId] = useState(null);
@@ -327,7 +329,7 @@ const CATEGORIAS = ['Laticínios', 'Mercearia', 'Bebidas', 'Higiene', 'Limpeza',
           </TouchableOpacity>
         </View>
 
-        {/* Grid 2x2 de Ações Rápidas de Estoque */}
+        {/* Grid de Ações Rápidas de Estoque e Clientes */}
         <View style={styles.quickActionsGrid}>
           <TouchableOpacity 
             style={styles.quickActionCard}
@@ -385,6 +387,20 @@ const CATEGORIAS = ['Laticínios', 'Mercearia', 'Bebidas', 'Higiene', 'Limpeza',
             <View style={styles.quickActionTextContainer}>
               <Text style={styles.quickActionTitle}>Fornecedores</Text>
               <Text style={styles.quickActionDesc}>Parceiros comerciais</Text>
+            </View>
+          </TouchableOpacity>
+
+          <TouchableOpacity 
+            style={styles.quickActionCard}
+            onPress={() => setClientsModalVisible(true)}
+            activeOpacity={0.7}
+          >
+            <View style={[styles.quickActionIconBg, { backgroundColor: '#EEF2FF' }]}>
+              <Ionicons name="people-outline" size={18} color="#4338CA" />
+            </View>
+            <View style={styles.quickActionTextContainer}>
+              <Text style={styles.quickActionTitle}>Clientes & Fiado</Text>
+              <Text style={styles.quickActionDesc}>Contas e limites</Text>
             </View>
           </TouchableOpacity>
         </View>
@@ -584,8 +600,8 @@ const CATEGORIAS = ['Laticínios', 'Mercearia', 'Bebidas', 'Higiene', 'Limpeza',
                   {/* Ações do Card */}
                   <View style={styles.btnActionsRow}>
                     <TouchableOpacity 
-                      style={styles.kardexCardBtn} 
-                      onPress={() => {
+                       style={styles.kardexCardBtn} 
+                       onPress={() => {
                         setSelectedKardexProduct(item);
                         setKardexModalVisible(true);
                       }}
@@ -918,6 +934,13 @@ const CATEGORIAS = ['Laticínios', 'Mercearia', 'Bebidas', 'Higiene', 'Limpeza',
         visible={suppliersModalVisible}
         gerenteId={user?.gerente_id}
         onClose={() => setSuppliersModalVisible(false)}
+      />
+
+      {/* Modal de Gestão de Clientes, Contas e Limites */}
+      <ClientsModal
+        visible={clientsModalVisible}
+        gerenteId={user?.gerente_id}
+        onClose={() => setClientsModalVisible(false)}
       />
     </SafeAreaView>
   );

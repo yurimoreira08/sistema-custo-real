@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   StyleSheet,
   Text,
@@ -6,21 +6,22 @@ import {
   FlatList,
   TouchableOpacity,
   TextInput,
-  Alert,
-  Platform,
   ScrollView,
   Modal
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useApp } from '../context/AppContext';
-import { registerSale, finalizarVendaCompleta } from '../database/db';
+import { finalizarVendaCompleta } from '../database/db';
 import { Ionicons } from '@expo/vector-icons';
 import BarcodeScannerModal from '../components/BarcodeScannerModal';
 import { feedbackFound, feedbackNotFound } from '../utils/scanFeedback';
 import SyncBadge from '../components/SyncBadge';
 import ConfirmationModal from '../components/ConfirmationModal';
 import CheckoutPaymentModal from '../components/CheckoutPaymentModal';
+import CashRegisterModal from '../components/CashRegisterModal';
+import ClientsModal from '../components/ClientsModal';
+import { obterTurnoAtivo } from '../services/cashService';
 
 export default function NewSaleScreen() {
   const { user, products, settings, sales, refreshData } = useApp();
@@ -31,6 +32,11 @@ export default function NewSaleScreen() {
   const [clearCartModalVisible, setClearCartModalVisible] = useState(false);
   const [checkoutModalVisible, setCheckoutModalVisible] = useState(false);
   const [successModalVisible, setSuccessModalVisible] = useState(false);
+
+  // Turno de Caixa e Controle de Ciclo de Vida
+  const [turnoCaixa, setTurnoCaixa] = useState(null);
+  const [cashModalVisible, setCashModalVisible] = useState(false);
+  const [clientsModalVisible, setClientsModalVisible] = useState(false);
 
   const [vendaSucessoInfo, setVendaSucessoInfo] = useState(null);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
@@ -43,6 +49,21 @@ export default function NewSaleScreen() {
   };
 
   const nextSaleNum = `#${String(sales.length + 1).padStart(4, '0')}`;
+
+  const carregarTurno = async () => {
+    if (user?.id) {
+      try {
+        const t = await obterTurnoAtivo(user.id, user.gerente_id);
+        setTurnoCaixa(t);
+      } catch (e) {
+        console.warn('Erro ao carregar turno de caixa:', e);
+      }
+    }
+  };
+
+  useEffect(() => {
+    carregarTurno();
+  }, [user]);
 
   const searchResults = products.filter(p => 
     p.nome.toLowerCase().includes(searchQuery.toLowerCase()) || 
@@ -112,14 +133,41 @@ export default function NewSaleScreen() {
 
   const subtotal = cart.reduce((sum, item) => sum + (item.preco_venda * item.quantidade), 0);
   const totalItensCount = cart.reduce((sum, item) => sum + item.quantidade, 0);
-  
-  const cmvSplit = parseFloat((subtotal * (settings.percentual_cmv / 100)).toFixed(2));
-  const opexSplit = parseFloat((subtotal * (settings.percentual_opex / 100)).toFixed(2));
-  const lucroSplit = parseFloat((subtotal - cmvSplit - opexSplit).toFixed(2));
 
-  const handleCheckout = () => {
+  /**
+   * Bloqueio rigoroso do checkout sem caixa ativo ou se estiver bloqueado
+   */
+  const handleCheckout = async () => {
     if (cart.length === 0) return;
-    setCheckoutModalVisible(true);
+
+    try {
+      const turno = await obterTurnoAtivo(user?.id, user?.gerente_id);
+      setTurnoCaixa(turno);
+
+      if (!turno) {
+        showCustomAlert(
+          'Caixa Fechado',
+          'Checkout bloqueado: Não há caixa aberto para o seu operador. Realize a abertura do caixa com o fundo de troco inicial para registrar vendas.',
+          'danger'
+        );
+        setCashModalVisible(true);
+        return;
+      }
+
+      if (turno.status === 'bloqueado') {
+        showCustomAlert(
+          'Caixa Bloqueado',
+          `Checkout bloqueado: O caixa #${turno.id} está temporariamente BLOQUEADO (${turno.motivo_bloqueio || 'Operação suspensa'}). Desbloqueie o caixa para continuar.`,
+          'danger'
+        );
+        setCashModalVisible(true);
+        return;
+      }
+
+      setCheckoutModalVisible(true);
+    } catch (e) {
+      setCheckoutModalVisible(true);
+    }
   };
 
   const confirmCheckout = async (dadosCheckout) => {
@@ -138,6 +186,7 @@ export default function NewSaleScreen() {
       setVendaSucessoInfo(res);
       setSuccessModalVisible(true);
       await refreshData();
+      await carregarTurno();
     } catch (error) {
       showCustomAlert('Erro ao Finalizar Venda', error.message || 'Houve um erro no processamento.', 'danger');
       console.error(error);
@@ -216,12 +265,43 @@ export default function NewSaleScreen() {
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <StatusBar style="light" />
 
-      {/* Header Bar */}
+      {/* Header Bar com Badge de Ciclo de Vida do Caixa */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <Ionicons name="cart" size={24} color="#FFF" style={{ marginRight: 8 }} />
-          <Text style={styles.headerTitle}>Nova Venda</Text>
+          <View>
+            <Text style={styles.headerTitle}>Nova Venda</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
+              {/* Pill de Status do Caixa */}
+            <TouchableOpacity 
+              style={[
+                styles.caixaStatusPill,
+                !turnoCaixa ? styles.caixaFechadoPill : turnoCaixa.status === 'aberto' ? styles.caixaAbertoPill : styles.caixaBloqueadoPill
+              ]}
+              onPress={() => setCashModalVisible(true)}
+            >
+              <Ionicons 
+                name={!turnoCaixa ? "ellipse" : turnoCaixa.status === 'aberto' ? "checkmark-circle" : "lock-closed"} 
+                size={11} 
+                color="#FFF" 
+                style={{ marginRight: 4 }} 
+              />
+              <Text style={styles.caixaStatusPillText}>
+                {!turnoCaixa ? "Caixa Fechado" : turnoCaixa.status === 'aberto' ? `Caixa #${turnoCaixa.id}` : "Bloqueado"}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity 
+              style={styles.clientesPill}
+              onPress={() => setClientsModalVisible(true)}
+            >
+              <Ionicons name="people" size={11} color="#FFF" style={{ marginRight: 4 }} />
+              <Text style={styles.caixaStatusPillText}>Clientes & Fiado</Text>
+            </TouchableOpacity>
+            </View>
+          </View>
         </View>
+
         <View style={styles.headerRight}>
           <SyncBadge />
           <Text style={styles.ticketNumber}>{nextSaleNum}</Text>
@@ -259,13 +339,12 @@ export default function NewSaleScreen() {
                 <Ionicons name="close-circle" size={18} color="#A0AEC0" />
               </TouchableOpacity>
             )}
-            {/* Botão de leitura por câmera */}
             <TouchableOpacity style={styles.scanIconBtn} onPress={() => setScannerVisible(true)}>
               <Ionicons name="barcode-outline" size={20} color="#FFF" />
             </TouchableOpacity>
           </View>
 
-          {/* Resultados da busca (Overlay suspenso dentro do card) */}
+          {/* Resultados da busca */}
           {showSearchResults && (
             <View style={styles.searchResultsDropdown}>
               {searchResults.length === 0 ? (
@@ -315,11 +394,10 @@ export default function NewSaleScreen() {
           <Text style={styles.cartTitleText}>🛒 Itens da venda ({cart.length})</Text>
         </View>
 
-        {/* Lista do Carrinho (Fundo cinza claro) */}
+        {/* Lista do Carrinho */}
         <View style={styles.cartAreaContainer}>
           {cart.length === 0 ? (
             <View style={styles.emptyCartContainer}>
-              {/* Ilustração customizada das sacolinhas coloridas idêntica à imagem */}
               <View style={styles.bagsGraphic}>
                 <View style={[styles.bagSquare, { backgroundColor: '#4299E1', zIndex: 2 }]}>
                   <View style={styles.bagHandleArc} />
@@ -386,7 +464,7 @@ export default function NewSaleScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* Modal de leitura por câmera */}
+      {/* Modal de Leitura por Câmera */}
       <Modal
         visible={scannerVisible}
         animationType="slide"
@@ -398,7 +476,7 @@ export default function NewSaleScreen() {
         />
       </Modal>
 
-      {/* Modal de confirmação de esvaziamento de carrinho */}
+      {/* Modal de Confirmação de Esvaziamento */}
       <ConfirmationModal
         visible={clearCartModalVisible}
         title="Cancelar Venda"
@@ -413,7 +491,24 @@ export default function NewSaleScreen() {
         onCancel={() => setClearCartModalVisible(false)}
       />
 
-      {/* Modal de confirmação de checkout com formas de pagamento e taxas */}
+      {/* Modal de Gestão de Turnos de Caixa */}
+      <CashRegisterModal
+        visible={cashModalVisible}
+        gerenteId={user?.gerente_id}
+        usuarioId={user?.id}
+        usuarioNome={user?.nome}
+        onClose={() => setCashModalVisible(false)}
+        onShiftChange={(novoTurno) => setTurnoCaixa(novoTurno)}
+      />
+
+      {/* Modal de Gestão de Clientes & Contas */}
+      <ClientsModal
+        visible={clientsModalVisible}
+        gerenteId={user?.gerente_id}
+        onClose={() => setClientsModalVisible(false)}
+      />
+
+      {/* Modal de Checkout & Pagamentos */}
       <CheckoutPaymentModal
         visible={checkoutModalVisible}
         totalVenda={subtotal}
@@ -423,7 +518,7 @@ export default function NewSaleScreen() {
         onClose={() => setCheckoutModalVisible(false)}
       />
 
-      {/* Modal de sucesso pós-venda (exibição de recebimentos, taxas e lucro real) */}
+      {/* Modal de Sucesso pós-venda */}
       <ConfirmationModal
         visible={successModalVisible}
         title={`Venda Finalizada! #${vendaSucessoInfo?.vendaId || ''}`}
@@ -444,7 +539,8 @@ export default function NewSaleScreen() {
           setSuccessModalVisible(false);
         }}
       />
-      {/* Alerta genérico customizado */}
+
+      {/* Alerta Genérico */}
       <ConfirmationModal
         visible={alertVisible}
         title={alertConfig.title}
@@ -469,16 +565,49 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 10,
   },
   headerLeft: {
     flexDirection: 'row',
     alignItems: 'center',
   },
   headerTitle: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: 'bold',
     color: '#FFF',
+  },
+  caixaStatusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 12,
+    marginTop: 2,
+    alignSelf: 'flex-start'
+  },
+  caixaAbertoPill: {
+    backgroundColor: '#2E7D32'
+  },
+  caixaBloqueadoPill: {
+    backgroundColor: '#D97706'
+  },
+  caixaFechadoPill: {
+    backgroundColor: '#C53030'
+  },
+  clientesPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 12,
+    marginTop: 2,
+    backgroundColor: '#4338CA',
+    alignSelf: 'flex-start'
+  },
+  caixaStatusPillText: {
+    color: '#FFF',
+    fontSize: 10,
+    fontWeight: 'bold'
   },
   headerRight: {
     flexDirection: 'row',
@@ -499,94 +628,81 @@ const styles = StyleSheet.create({
   cancelBtnText: {
     color: '#FFF',
     fontSize: 14,
-    fontWeight: 'bold',
+    fontWeight: '600',
   },
   mainContainer: {
     flex: 1,
-    backgroundColor: '#F0F4F8',
-    padding: 16,
+    backgroundColor: '#F7FAFC',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingTop: 16,
   },
   addProductCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 16,
+    marginHorizontal: 16,
+    borderRadius: 12,
+    padding: 12,
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
-    elevation: 2,
-    zIndex: 100, // Garante que a busca suspensa apareça acima do carrinho
     position: 'relative',
+    zIndex: 10,
   },
   addProductLabel: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: 'bold',
-    color: '#718096',
-    letterSpacing: 0.5,
-    marginBottom: 10,
+    color: '#4A5568',
+    marginBottom: 8,
   },
   searchInputWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#CBD5E1', // Borda azulada sutil
-    paddingHorizontal: 12,
-    height: 48,
+    borderColor: '#CBD5E0',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    height: 44,
+    backgroundColor: '#FFF',
   },
   searchInput: {
     flex: 1,
+    fontSize: 14,
     color: '#2D3748',
-    fontSize: 15,
   },
   scanIconBtn: {
     backgroundColor: '#1E63EC',
-    width: 36,
-    height: 36,
-    borderRadius: 8,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginLeft: 8,
+    borderRadius: 6,
+    padding: 6,
+    marginLeft: 6,
   },
   searchResultsDropdown: {
     position: 'absolute',
-    top: 86,
-    left: 16,
-    right: 16,
+    top: 76,
+    left: 12,
+    right: 12,
     backgroundColor: '#FFFFFF',
-    borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#CBD5E1',
+    borderColor: '#CBD5E0',
+    borderRadius: 8,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    elevation: 5,
-    zIndex: 200,
-  },
-  searchEmptyRow: {
-    padding: 16,
-    alignItems: 'center',
-  },
-  searchEmptyText: {
-    color: '#A0AEC0',
-    fontSize: 14,
+    shadowOpacity: 0.1,
+    shadowOffset: { width: 0, height: 4 },
+    shadowRadius: 6,
+    elevation: 8,
+    zIndex: 20,
+    overflow: 'hidden',
   },
   searchResultItem: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderBottomWidth: 0.5,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderBottomWidth: 1,
     borderBottomColor: '#EDF2F7',
   },
   searchResultName: {
     fontSize: 14,
-    fontWeight: 'bold',
+    fontWeight: '600',
     color: '#2D3748',
   },
   searchResultMeta: {
@@ -597,95 +713,103 @@ const styles = StyleSheet.create({
   searchResultPrice: {
     fontSize: 14,
     fontWeight: 'bold',
-    color: '#2D3748',
+    color: '#1E63EC',
   },
   searchResultStock: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: 'bold',
     marginTop: 2,
   },
-  cartTitleRow: {
-    marginVertical: 12,
+  searchEmptyRow: {
+    padding: 16,
+    alignItems: 'center',
   },
-  cartTitleText: {
+  searchEmptyText: {
     color: '#718096',
     fontSize: 13,
-    fontWeight: '600',
+  },
+  cartTitleRow: {
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 6,
+  },
+  cartTitleText: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#2D3748',
   },
   cartAreaContainer: {
     flex: 1,
-    backgroundColor: '#FFFFFF', // Área do carrinho em branco
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
+    marginHorizontal: 16,
+    marginBottom: 8,
+    backgroundColor: '#EDF2F7',
+    borderRadius: 12,
     overflow: 'hidden',
   },
   emptyCartContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 24,
+    paddingVertical: 40,
   },
   bagsGraphic: {
-    flexDirection: 'row',
-    width: 60,
-    height: 48,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 20,
     position: 'relative',
+    width: 60,
+    height: 60,
+    marginBottom: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   bagSquare: {
-    width: 28,
-    height: 32,
-    borderRadius: 4,
-    justifyContent: 'center',
-    alignItems: 'center',
+    width: 38,
+    height: 44,
+    borderRadius: 6,
     position: 'absolute',
+    alignItems: 'center',
   },
   bagHandleArc: {
-    width: 14,
+    width: 16,
     height: 12,
-    borderRadius: 7,
-    borderWidth: 2,
-    borderColor: '#FFF',
-    backgroundColor: 'transparent',
-    position: 'absolute',
-    top: -8,
+    borderTopLeftRadius: 8,
+    borderTopRightRadius: 8,
+    borderWidth: 3,
+    borderColor: '#FFFFFF',
+    borderBottomWidth: 0,
+    marginTop: -6,
   },
   bagLines: {
-    width: 18,
+    width: 20,
     height: 2,
     backgroundColor: 'rgba(255,255,255,0.4)',
-    marginVertical: 2,
+    marginTop: 14,
   },
   emptyCartMainText: {
     fontSize: 14,
-    color: '#A0AEC0',
-    textAlign: 'center',
-    lineHeight: 20,
+    fontWeight: 'bold',
+    color: '#4A5568',
+    marginBottom: 4,
   },
   emptyCartSubText: {
-    fontSize: 14,
-    color: '#A0AEC0',
-    textAlign: 'center',
-    lineHeight: 20,
+    fontSize: 12,
+    color: '#718096',
   },
   cartItemRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F0F4F8',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
   },
   cartItemLeft: {
     flex: 1,
-    marginRight: 8,
   },
   cartItemName: {
-    fontSize: 14,
-    fontWeight: 'bold',
+    fontSize: 13,
+    fontWeight: '600',
     color: '#2D3748',
   },
   cartItemBrand: {
@@ -696,109 +820,92 @@ const styles = StyleSheet.create({
   cartItemRight: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 16,
+    gap: 10,
   },
   qtyContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#EDF2F7',
     borderRadius: 6,
-    padding: 3,
+    paddingHorizontal: 4,
+    paddingVertical: 2,
   },
   qtyBtn: {
-    width: 24,
-    height: 24,
-    borderRadius: 4,
-    backgroundColor: '#FFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 1,
-    elevation: 1,
+    padding: 4,
   },
   qtyText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: 'bold',
     color: '#2D3748',
-    marginHorizontal: 8,
+    paddingHorizontal: 8,
   },
   cartItemSubtotal: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: 'bold',
-    color: '#2D3748',
-    minWidth: 70,
+    color: '#1E63EC',
+    minWidth: 64,
     textAlign: 'right',
   },
   footerPanel: {
     backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: Platform.OS === 'ios' ? 24 : 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 5,
+    borderTopWidth: 1,
+    borderTopColor: '#E2E8F0',
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 16,
   },
   summaryRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginVertical: 4,
+    marginBottom: 4,
   },
   summaryLabel: {
-    fontSize: 14,
+    fontSize: 12,
     color: '#718096',
   },
   summaryValue: {
-    fontSize: 14,
+    fontSize: 12,
+    fontWeight: '600',
     color: '#2D3748',
-    fontWeight: '500',
   },
   dashedDivider: {
+    borderBottomWidth: 1,
+    borderBottomColor: '#CBD5E0',
     borderStyle: 'dashed',
-    borderWidth: 0.5,
-    borderColor: '#CBD5E1',
-    marginVertical: 12,
+    marginVertical: 8,
   },
   totalRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 12,
   },
   totalLabel: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: 'bold',
-    color: '#2D3748',
+    color: '#1A202C',
   },
   totalValue: {
-    fontSize: 24,
+    fontSize: 20,
     fontWeight: 'bold',
-    color: '#1E63EC', // Azul royal forte
+    color: '#1E63EC',
   },
   checkoutBtn: {
     flexDirection: 'row',
-    height: 52,
-    borderRadius: 8,
-    justifyContent: 'center',
     alignItems: 'center',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
+    justifyContent: 'center',
+    paddingVertical: 14,
+    borderRadius: 10,
   },
   checkoutBtnEnabled: {
-    backgroundColor: '#48BB78', // Verde idêntico à imagem
+    backgroundColor: '#1E63EC',
   },
   checkoutBtnDisabled: {
-    backgroundColor: '#CBD5E1', // Fundo cinza claro
+    backgroundColor: '#A0AEC0',
   },
   checkoutBtnText: {
     color: '#FFFFFF',
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: 'bold',
   },
 });

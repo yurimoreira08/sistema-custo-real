@@ -7,6 +7,7 @@ import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { fetchDailyClosing } from '../database/db';
 import SyncBadge from '../components/SyncBadge';
+import CashRegisterModal from '../components/CashRegisterModal';
 import { useApp } from '../context/AppContext';
 import { useFocusEffect } from '@react-navigation/native';
 
@@ -30,6 +31,7 @@ export default function DailyClosingScreen() {
   const [date, setDate] = useState(new Date());
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [cashModalVisible, setCashModalVisible] = useState(false);
 
   const load = useCallback(async () => {
     if (!user) return;
@@ -62,7 +64,13 @@ export default function DailyClosingScreen() {
           <Ionicons name="cash" size={24} color="#FFF" style={{ marginRight: 8 }} />
           <Text style={styles.headerTitle}>Fechamento de Caixa</Text>
         </View>
-        <SyncBadge />
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <TouchableOpacity style={styles.turnosBtn} onPress={() => setCashModalVisible(true)}>
+            <Ionicons name="swap-horizontal" size={14} color="#FFF" style={{ marginRight: 4 }} />
+            <Text style={styles.turnosBtnText}>Turnos</Text>
+          </TouchableOpacity>
+          <SyncBadge />
+        </View>
       </View>
 
       <View style={styles.dateNav}>
@@ -150,6 +158,14 @@ export default function DailyClosingScreen() {
           </View>
         </ScrollView>
       )}
+      <CashRegisterModal
+        visible={cashModalVisible}
+        gerenteId={user?.gerente_id}
+        usuarioId={user?.id}
+        usuarioNome={user?.nome}
+        onClose={() => setCashModalVisible(false)}
+        onShiftChange={() => load()}
+      />
     </SafeAreaView>
   );
 }
@@ -166,6 +182,19 @@ const styles = StyleSheet.create({
   },
   headerLeft: { flexDirection: 'row', alignItems: 'center' },
   headerTitle: { fontSize: 20, fontWeight: 'bold', color: '#FFF' },
+  turnosBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.25)',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8
+  },
+  turnosBtnText: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: 'bold'
+  },
   dateNav: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -14,6 +14,14 @@ import {
   validarIgualdadeMonetaria, 
   calcularProporcional 
 } from '../src/utils/money.js';
+import { 
+  validarCPF, 
+  validarCNPJ, 
+  validarDocumento, 
+  validarTelefone, 
+  formatarDocumento, 
+  formatarTelefone 
+} from '../src/utils/validators.js';
 
 // ============================================================================
 // SUÍTE DE TESTES AUTOMATIZADOS: LUCROCERTO (SEMANAS S01 A S05)
@@ -54,6 +62,8 @@ function setupTestDb() {
       telefone TEXT,
       limite_fiado REAL NOT NULL DEFAULT 0.0,
       saldo_devedor REAL NOT NULL DEFAULT 0.0,
+      bloqueado_inadimplente INTEGER NOT NULL DEFAULT 0,
+      motivo_bloqueio TEXT,
       ativo INTEGER NOT NULL DEFAULT 1,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
@@ -112,11 +122,13 @@ function setupTestDb() {
       status TEXT NOT NULL DEFAULT 'concluida' CHECK(status IN ('concluida', 'cancelada', 'devolvida_parcial', 'totalmente_devolvida')),
       canal_venda TEXT NOT NULL DEFAULT 'balcao' CHECK(canal_venda IN ('balcao', 'delivery', 'encomenda')),
       observacoes TEXT,
+      turno_caixa_id INTEGER,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (cliente_id) REFERENCES Cliente(id)
     );
 
     CREATE TABLE ItensVenda (
+      gerente_id INTEGER NOT NULL DEFAULT 1,
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       venda_id INTEGER NOT NULL,
       produto_id INTEGER NOT NULL,
@@ -186,6 +198,7 @@ function setupTestDb() {
       numero_nota_fiscal TEXT,
       valor_total REAL NOT NULL DEFAULT 0.0,
       observacoes TEXT,
+      turno_caixa_id INTEGER,
       data_entrada TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (fornecedor_id) REFERENCES Fornecedor(id)
     );
@@ -198,6 +211,7 @@ function setupTestDb() {
       custo_unitario REAL NOT NULL,
       custo_total REAL NOT NULL,
       lote TEXT,
+      data_validade TEXT,
       FOREIGN KEY (entrada_id) REFERENCES EntradaMercadoria(id),
       FOREIGN KEY (produto_id) REFERENCES Produto(id)
     );
@@ -229,6 +243,60 @@ function setupTestDb() {
       impacto_financeiro REAL NOT NULL,
       usuario_id INTEGER,
       data_perda TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (produto_id) REFERENCES Produto(id)
+    );
+
+    CREATE TABLE TurnoCaixa (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      gerente_id INTEGER NOT NULL,
+      operador_id INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'aberto' CHECK(status IN ('aberto', 'bloqueado', 'fechado')),
+      fundo_troco_inicial REAL NOT NULL DEFAULT 0.0,
+      total_vendas_dinheiro REAL NOT NULL DEFAULT 0.0,
+      total_vendas_outros REAL NOT NULL DEFAULT 0.0,
+      total_suprimentos REAL NOT NULL DEFAULT 0.0,
+      total_sangrias REAL NOT NULL DEFAULT 0.0,
+      saldo_esperado_dinheiro REAL NOT NULL DEFAULT 0.0,
+      saldo_fechamento_informado REAL,
+      diferenca_fechamento REAL,
+      motivo_bloqueio TEXT,
+      observacoes TEXT,
+      data_abertura TEXT DEFAULT CURRENT_TIMESTAMP,
+      data_bloqueio TEXT,
+      data_fechamento TEXT,
+      FOREIGN KEY (operador_id) REFERENCES Usuario(id)
+    );
+
+    CREATE TABLE MovimentacaoCaixa (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      turno_caixa_id INTEGER NOT NULL,
+      gerente_id INTEGER NOT NULL,
+      operador_id INTEGER NOT NULL,
+      tipo_operacao TEXT NOT NULL CHECK(tipo_operacao IN ('ABERTURA', 'VENDA', 'SANGRIA', 'SUPRIMENTO', 'BLOQUEIO', 'DESBLOQUEIO', 'FECHAMENTO', 'ESTORNO')),
+      forma_pagamento TEXT DEFAULT 'dinheiro',
+      valor REAL NOT NULL,
+      saldo_apos REAL NOT NULL,
+      origem_referencia TEXT,
+      justificativa TEXT,
+      data_movimentacao TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (turno_caixa_id) REFERENCES TurnoCaixa(id),
+      FOREIGN KEY (operador_id) REFERENCES Usuario(id)
+    );
+
+    CREATE TABLE LoteEstoque (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      gerente_id INTEGER NOT NULL,
+      produto_id INTEGER NOT NULL,
+      entrada_id INTEGER,
+      item_entrada_id INTEGER,
+      numero_lote TEXT NOT NULL,
+      data_entrada TEXT DEFAULT CURRENT_TIMESTAMP,
+      data_validade TEXT,
+      quantidade_inicial REAL NOT NULL,
+      quantidade_saldo REAL NOT NULL,
+      custo_unitario REAL NOT NULL,
+      status TEXT NOT NULL DEFAULT 'ativo' CHECK(status IN ('ativo', 'esgotado', 'vencido')),
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (produto_id) REFERENCES Produto(id)
     );
   `);
@@ -1511,3 +1579,491 @@ test('S05 — Integração Ponta a Ponta: Ciclo Completo com Auditorias, Cancela
   assert.equal(perdaDev.custo_unitario_aplicado, 10.0);
 });
 
+
+
+// ============================================================================
+// NOVAS REGRAS DE NEGÓCIO E TESTES INTEGRADOS (S06)
+// ============================================================================
+
+test('S06 — Item 1: Abertura e Turnos de Caixa (Ciclo de Vida, Fundo de Troco, Auditoria por Operador e Bloqueio de Checkout)', () => {
+  const db = setupTestDb();
+  db.prepare(`INSERT INTO Usuario (id, nome, email, senha, cargo) VALUES (1, 'Gerente Geral', 'gerente@mercado.com', '${sha256('1234')}', 'gerente');`).run();
+  db.prepare(`INSERT INTO Usuario (id, nome, email, senha, cargo, gerente_id) VALUES (2, 'Operador Caixa 1', 'operador1@mercado.com', '${sha256('1234')}', 'balconista', 1);`).run();
+  db.prepare(`INSERT INTO Produto (id, gerente_id, nome, preco_custo, preco_venda, estoque_atual) VALUES (1, 1, 'Refrigerante 2L', 5.0, 9.0, 100.0);`).run();
+
+  // 1. Funções do Ciclo de Vida do Caixa
+  function abrirCaixa(operadorId, gerenteId, fundoTrocoInicial, obs = '') {
+    const ativo = db.prepare("SELECT id FROM TurnoCaixa WHERE operador_id = ? AND gerente_id = ? AND status IN ('aberto', 'bloqueado')").get(operadorId, gerenteId);
+    if (ativo) {
+      throw new Error(`Operador já possui um turno de caixa ativo (Turno #${ativo.id}).`);
+    }
+    const res = db.prepare(`
+      INSERT INTO TurnoCaixa (gerente_id, operador_id, status, fundo_troco_inicial, saldo_esperado_dinheiro, observacoes)
+      VALUES (?, ?, 'aberto', ?, ?, ?);
+    `).run(gerenteId, operadorId, fundoTrocoInicial, fundoTrocoInicial, obs);
+
+    const turnoId = Number(res.lastInsertRowid);
+    db.prepare(`
+      INSERT INTO MovimentacaoCaixa (turno_caixa_id, gerente_id, operador_id, tipo_operacao, forma_pagamento, valor, saldo_apos, origem_referencia, justificativa)
+      VALUES (?, ?, ?, 'ABERTURA', 'dinheiro', ?, ?, ?, 'Abertura com fundo de troco inicial');
+    `).run(turnoId, gerenteId, operadorId, fundoTrocoInicial, fundoTrocoInicial, `ABERTURA-${turnoId}`);
+
+    return db.prepare('SELECT * FROM TurnoCaixa WHERE id = ?').get(turnoId);
+  }
+
+  function bloquearCaixa(turnoId, operadorId, gerenteId, motivo) {
+    if (!motivo || motivo.trim().length === 0) throw new Error('Informe o motivo do bloqueio.');
+    const t = db.prepare('SELECT * FROM TurnoCaixa WHERE id = ?').get(turnoId);
+    if (!t || t.status === 'fechado') throw new Error('Caixa inexistente ou fechado.');
+    if (t.status === 'bloqueado') throw new Error('Caixa já está bloqueado.');
+
+    db.prepare("UPDATE TurnoCaixa SET status = 'bloqueado', motivo_bloqueio = ? WHERE id = ?").run(motivo, turnoId);
+    db.prepare(`
+      INSERT INTO MovimentacaoCaixa (turno_caixa_id, gerente_id, operador_id, tipo_operacao, forma_pagamento, valor, saldo_apos, origem_referencia, justificativa)
+      VALUES (?, ?, ?, 'BLOQUEIO', 'dinheiro', 0.0, ?, ?, ?);
+    `).run(turnoId, gerenteId, operadorId, t.saldo_esperado_dinheiro, `BLOQUEIO-${turnoId}`, motivo);
+
+    return db.prepare('SELECT * FROM TurnoCaixa WHERE id = ?').get(turnoId);
+  }
+
+  function desbloquearCaixa(turnoId, operadorId, gerenteId) {
+    const t = db.prepare('SELECT * FROM TurnoCaixa WHERE id = ?').get(turnoId);
+    if (!t || t.status !== 'bloqueado') throw new Error('Caixa não está bloqueado.');
+
+    db.prepare("UPDATE TurnoCaixa SET status = 'aberto', motivo_bloqueio = NULL WHERE id = ?").run(turnoId);
+    db.prepare(`
+      INSERT INTO MovimentacaoCaixa (turno_caixa_id, gerente_id, operador_id, tipo_operacao, forma_pagamento, valor, saldo_apos, origem_referencia, justificativa)
+      VALUES (?, ?, ?, 'DESBLOQUEIO', 'dinheiro', 0.0, ?, ?, 'Desbloqueio autorizado');
+    `).run(turnoId, gerenteId, operadorId, t.saldo_esperado_dinheiro, `DESBLOQUEIO-${turnoId}`);
+
+    return db.prepare('SELECT * FROM TurnoCaixa WHERE id = ?').get(turnoId);
+  }
+
+  function movimentarCaixa(turnoId, operadorId, gerenteId, tipo, valor, justificativa) {
+    const t = db.prepare("SELECT * FROM TurnoCaixa WHERE id = ? AND status = 'aberto'").get(turnoId);
+    if (!t) throw new Error('Caixa deve estar aberto para movimentações.');
+
+    let novoSaldo = t.saldo_esperado_dinheiro;
+    if (tipo === 'SANGRIA') {
+      if (valor > t.saldo_esperado_dinheiro) {
+        throw new Error(`Saldo insuficiente para sangria (Disponível: ${t.saldo_esperado_dinheiro}, Solicitado: ${valor}).`);
+      }
+      novoSaldo = subtractMoney(t.saldo_esperado_dinheiro, valor);
+      db.prepare('UPDATE TurnoCaixa SET total_sangrias = total_sangrias + ?, saldo_esperado_dinheiro = ? WHERE id = ?').run(valor, novoSaldo, turnoId);
+    } else if (tipo === 'SUPRIMENTO') {
+      novoSaldo = sumMoney(t.saldo_esperado_dinheiro, valor);
+      db.prepare('UPDATE TurnoCaixa SET total_suprimentos = total_suprimentos + ?, saldo_esperado_dinheiro = ? WHERE id = ?').run(valor, novoSaldo, turnoId);
+    }
+
+    db.prepare(`
+      INSERT INTO MovimentacaoCaixa (turno_caixa_id, gerente_id, operador_id, tipo_operacao, forma_pagamento, valor, saldo_apos, origem_referencia, justificativa)
+      VALUES (?, ?, ?, ?, 'dinheiro', ?, ?, ?, ?);
+    `).run(turnoId, gerenteId, operadorId, tipo, valor, novoSaldo, `${tipo}-${turnoId}`, justificativa);
+
+    return db.prepare('SELECT * FROM TurnoCaixa WHERE id = ?').get(turnoId);
+  }
+
+  function validarCheckout(operadorId, gerenteId) {
+    const t = db.prepare("SELECT * FROM TurnoCaixa WHERE operador_id = ? AND gerente_id = ? AND status IN ('aberto', 'bloqueado') ORDER BY id DESC LIMIT 1").get(operadorId, gerenteId);
+    if (!t) {
+      throw new Error('Checkout bloqueado: Não há caixa aberto para o operador.');
+    }
+    if (t.status === 'bloqueado') {
+      throw new Error(`Checkout bloqueado: Caixa está BLOQUEADO (${t.motivo_bloqueio}).`);
+    }
+    return t;
+  }
+
+  function fecharCaixa(turnoId, operadorId, gerenteId, saldoFisicoInformado) {
+    const t = db.prepare('SELECT * FROM TurnoCaixa WHERE id = ?').get(turnoId);
+    if (!t || t.status === 'fechado') throw new Error('Caixa já encerrado.');
+
+    const diferenca = subtractMoney(saldoFisicoInformado, t.saldo_esperado_dinheiro);
+    db.prepare(`
+      UPDATE TurnoCaixa 
+      SET status = 'fechado', saldo_fechamento_informado = ?, diferenca_fechamento = ?, data_fechamento = CURRENT_TIMESTAMP
+      WHERE id = ?;
+    `).run(saldoFisicoInformado, diferenca, turnoId);
+
+    db.prepare(`
+      INSERT INTO MovimentacaoCaixa (turno_caixa_id, gerente_id, operador_id, tipo_operacao, forma_pagamento, valor, saldo_apos, origem_referencia, justificativa)
+      VALUES (?, ?, ?, 'FECHAMENTO', 'dinheiro', ?, ?, ?, ?);
+    `).run(turnoId, gerenteId, operadorId, saldoFisicoInformado, saldoFisicoInformado, `FECHAMENTO-${turnoId}`, `Fechamento. Diferença: ${diferenca}`);
+
+    return {
+      turno: db.prepare('SELECT * FROM TurnoCaixa WHERE id = ?').get(turnoId),
+      saldoEsperado: t.saldo_esperado_dinheiro,
+      saldoFisicoInformado,
+      diferenca
+    };
+  }
+
+  // --- CENÁRIO 1: TENTATIVA DE CHECKOUT SEM CAIXA ATIVO (DEVE FALHAR) ---
+  assert.throws(() => {
+    validarCheckout(2, 1);
+  }, /Checkout bloqueado: Não há caixa aberto/);
+
+  // --- CENÁRIO 2: ABERTURA DO CAIXA COM FUNDO DE TROCO (R$ 150,00) ---
+  const turnoAberto = abrirCaixa(2, 1, 150.0, 'Troco inicial notas pequenas');
+  assert.equal(turnoAberto.status, 'aberto');
+  assert.equal(turnoAberto.fundo_troco_inicial, 150.0);
+  assert.equal(turnoAberto.saldo_esperado_dinheiro, 150.0);
+
+  // Tentativa de abrir segundo caixa para o mesmo operador sem fechar o primeiro
+  assert.throws(() => {
+    abrirCaixa(2, 1, 200.0);
+  }, /Operador já possui um turno de caixa ativo/);
+
+  // Agora o checkout é permitido
+  const caixaValido = validarCheckout(2, 1);
+  assert.equal(caixaValido.id, turnoAberto.id);
+
+  // --- CENÁRIO 3: BLOQUEIO TEMPORÁRIO DO CAIXA E BLOQUEIO DE CHECKOUT ---
+  bloquearCaixa(turnoAberto.id, 2, 1, 'Pausa para almoço');
+  const tBloqueado = db.prepare('SELECT status FROM TurnoCaixa WHERE id = ?').get(turnoAberto.id);
+  assert.equal(tBloqueado.status, 'bloqueado');
+
+  // Checkout deve ser terminantemente bloqueado enquanto o caixa estiver bloqueado
+  assert.throws(() => {
+    validarCheckout(2, 1);
+  }, /Checkout bloqueado: Caixa está BLOQUEADO/);
+
+  // --- CENÁRIO 4: DESBLOQUEIO E REATIVAÇÃO DO CAIXA ---
+  desbloquearCaixa(turnoAberto.id, 2, 1);
+  const tReativado = db.prepare('SELECT status FROM TurnoCaixa WHERE id = ?').get(turnoAberto.id);
+  assert.equal(tReativado.status, 'aberto');
+  assert.doesNotThrow(() => validarCheckout(2, 1));
+
+  // --- CENÁRIO 5: SUPRIMENTO E SANGRIA ---
+  // Suprimento de R$ 50,00 -> saldo esperado passa de 150 para 200
+  const tAposSuprimento = movimentarCaixa(turnoAberto.id, 2, 1, 'SUPRIMENTO', 50.0, 'Reforço de moedas');
+  assert.equal(tAposSuprimento.saldo_esperado_dinheiro, 200.0);
+  assert.equal(tAposSuprimento.total_suprimentos, 50.0);
+
+  // Sangria de R$ 80,00 -> saldo esperado passa de 200 para 120
+  const tAposSangria = movimentarCaixa(turnoAberto.id, 2, 1, 'SANGRIA', 80.0, 'Recolhimento para cofre');
+  assert.equal(tAposSangria.saldo_esperado_dinheiro, 120.0);
+  assert.equal(tAposSangria.total_sangrias, 80.0);
+
+  // Sangria de valor maior que o saldo em dinheiro (R$ 150 > R$ 120) -> rejeitada!
+  assert.throws(() => {
+    movimentarCaixa(turnoAberto.id, 2, 1, 'SANGRIA', 150.0, 'Tentativa excessiva');
+  }, /Saldo insuficiente para sangria/);
+
+  // --- CENÁRIO 6: VENDA NO CHECKOUT COM RECEBIMENTO EM DINHEIRO E OUTROS ---
+  // Venda: R$ 36,00 (2 refrigerantes a R$ 18,00), pago R$ 20,00 em dinheiro e R$ 16,00 no PIX
+  const vId = 101;
+  db.prepare(`
+    INSERT INTO Venda (id, gerente_id, usuario_id, subtotal, total, status, canal_venda, turno_caixa_id)
+    VALUES (?, 1, 2, 36.0, 36.0, 'concluida', 'balcao', ?);
+  `).run(vId, turnoAberto.id);
+
+  // Atualiza caixa: Dinheiro R$ 20,00 -> saldo esperado de 120 vai para 140
+  db.prepare(`
+    UPDATE TurnoCaixa 
+    SET total_vendas_dinheiro = total_vendas_dinheiro + 20.0,
+        total_vendas_outros = total_vendas_outros + 16.0,
+        saldo_esperado_dinheiro = saldo_esperado_dinheiro + 20.0
+    WHERE id = ?;
+  `).run(turnoAberto.id);
+
+  db.prepare(`
+    INSERT INTO MovimentacaoCaixa (turno_caixa_id, gerente_id, operador_id, tipo_operacao, forma_pagamento, valor, saldo_apos, origem_referencia, justificativa)
+    VALUES (?, 1, 2, 'VENDA', 'dinheiro', 20.0, 140.0, ?, 'Venda balcão');
+  `).run(turnoAberto.id, `VENDA-${vId}`);
+
+  const tAposVenda = db.prepare('SELECT * FROM TurnoCaixa WHERE id = ?').get(turnoAberto.id);
+  assert.equal(tAposVenda.saldo_esperado_dinheiro, 140.0);
+  assert.equal(tAposVenda.total_vendas_dinheiro, 20.0);
+  assert.equal(tAposVenda.total_vendas_outros, 16.0);
+
+  // --- CENÁRIO 7: FECHAMENTO DE CAIXA E AUDITORIA MATEMÁTICA ---
+  // Saldo esperado é R$ 140,00. Suponha conferência cega informou R$ 140,00 (Exato)
+  const fechamento = fecharCaixa(turnoAberto.id, 2, 1, 140.0);
+  assert.equal(fechamento.turno.status, 'fechado');
+  assert.equal(fechamento.diferenca, 0.0);
+  assert.equal(fechamento.saldoFisicoInformado, 140.0);
+
+  // Tentativa de checkout após caixa fechado -> bloqueado novamente!
+  assert.throws(() => {
+    validarCheckout(2, 1);
+  }, /Checkout bloqueado: Não há caixa aberto/);
+
+  // Auditoria: Reconstruir o saldo de todas as movimentações do turno
+  const movs = db.prepare('SELECT * FROM MovimentacaoCaixa WHERE turno_caixa_id = ? ORDER BY id ASC').all(turnoAberto.id);
+  let saldoReconst = 0;
+  for (const m of movs) {
+    if (m.tipo_operacao === 'ABERTURA') saldoReconst = m.valor;
+    else if (m.tipo_operacao === 'SUPRIMENTO' || m.tipo_operacao === 'VENDA') saldoReconst = sumMoney(saldoReconst, m.valor);
+    else if (m.tipo_operacao === 'SANGRIA') saldoReconst = subtractMoney(saldoReconst, m.valor);
+  }
+  // 150 (abertura) + 50 (suprimento) - 80 (sangria) + 20 (venda dinheiro) = 140
+  assert.equal(saldoReconst, 140.0);
+  assert.equal(saldoReconst, fechamento.saldoEsperado);
+});
+
+test('S06 — Item 2: Cadastro de Clientes & Limite (Validação de Documento, Contato, Teto de Crédito e Bloqueio Preventivo de Inadimplentes)', () => {
+  const db = setupTestDb();
+  db.prepare(`INSERT INTO Usuario (id, nome, email, senha, cargo) VALUES (1, 'Gerente', 'gerente@teste.com', 'hash', 'gerente');`).run();
+
+  // 1. Validação de Documento (CPF / CNPJ)
+  // CPF válido gerado conforme algoritmo oficial (módulo 11)
+  assert.equal(validarCPF('52998224725'), true);
+  assert.equal(validarCPF('11144477735'), true);
+  // CPF inválido por dígito verificador incorreto
+  assert.equal(validarCPF('11144477736'), false);
+  // CPF inválido por sequência repetida
+  assert.equal(validarCPF('11111111111'), false);
+  assert.equal(validarCPF('00000000000'), false);
+
+  // CNPJ válido
+  assert.equal(validarCNPJ('11222333000181'), true);
+  // CNPJ inválido
+  assert.equal(validarCNPJ('11222333000182'), false);
+  assert.equal(validarCNPJ('00000000000000'), false);
+
+  // Validador universal
+  const docCpf = validarDocumento('111.444.777-35');
+  assert.equal(docCpf.valido, true);
+  assert.equal(docCpf.tipo, 'CPF');
+  assert.equal(formatarDocumento('11144477735'), '111.444.777-35');
+
+  const docInvalido = validarDocumento('12345');
+  assert.equal(docInvalido.valido, false);
+
+  // 2. Validação de Contato Telefônico
+  assert.equal(validarTelefone('86999887766').valido, true); // Celular 11 dígitos
+  assert.equal(validarTelefone('8632321234').valido, true);  // Fixo 10 dígitos
+  assert.equal(validarTelefone('086999887766').valido, false); // Começando com 0
+  assert.equal(validarTelefone('12345').valido, false);        // Menos de 10 dígitos
+  assert.equal(formatarTelefone('86999887766'), '(86) 99988-7766');
+
+  // 3. Regra de Negócio: Teto de Crédito Personalizável
+  function cadastrarCliente(dados) {
+    if (!dados.nome) throw new Error('Nome é obrigatório.');
+    if (dados.cpf) {
+      const v = validarDocumento(dados.cpf);
+      if (!v.valido) throw new Error(`Documento inválido: ${v.mensagem}`);
+    }
+    if (dados.telefone) {
+      const t = validarTelefone(dados.telefone);
+      if (!t.valido) throw new Error(`Telefone inválido: ${t.mensagem}`);
+    }
+    const limite = Math.max(0, parseFloat(dados.limite_fiado || 0));
+
+    const res = db.prepare(`
+      INSERT INTO Cliente (gerente_id, nome, cpf_cnpj, telefone, limite_fiado, saldo_devedor, bloqueado_inadimplente, motivo_bloqueio)
+      VALUES (1, ?, ?, ?, ?, 0.0, ?, ?);
+    `).run(dados.nome, dados.cpf || null, dados.telefone || null, limite, dados.bloqueado_inadimplente ? 1 : 0, dados.motivo_bloqueio || null);
+
+    return db.prepare('SELECT * FROM Cliente WHERE id = ?').get(res.lastInsertRowid);
+  }
+
+  function autorizarCompraFiado(clienteId, valor) {
+    const cli = db.prepare('SELECT * FROM Cliente WHERE id = ?').get(clienteId);
+    if (!cli) throw new Error('Cliente não encontrado.');
+
+    // Bloqueio preventivo de inadimplentes
+    if (cli.bloqueado_inadimplente === 1) {
+      throw new Error(`Venda a prazo bloqueada: Cliente "${cli.nome}" com bloqueio preventivo de crédito. Motivo: ${cli.motivo_bloqueio || 'Inadimplência'}.`);
+    }
+
+    const novoSaldo = cli.saldo_devedor + valor;
+    if (cli.limite_fiado > 0 && novoSaldo > (cli.limite_fiado + 0.001)) {
+      throw new Error(`Teto de crédito excedido para "${cli.nome}"! Limite: R$ ${cli.limite_fiado.toFixed(2)}, Saldo atual: R$ ${cli.saldo_devedor.toFixed(2)}, Tentativa: R$ ${valor.toFixed(2)}.`);
+    }
+
+    db.prepare('UPDATE Cliente SET saldo_devedor = ? WHERE id = ?').run(novoSaldo, clienteId);
+    return { autorizado: true, novoSaldo };
+  }
+
+  // Falha: cadastro com CPF incorreto
+  assert.throws(() => {
+    cadastrarCliente({ nome: 'João da Silva', cpf: '123.456.789-00', telefone: '86999887766' });
+  }, /Documento inválido/);
+
+  // Falha: cadastro com telefone incorreto
+  assert.throws(() => {
+    cadastrarCliente({ nome: 'Maria', cpf: '11144477735', telefone: '123' });
+  }, /Telefone inválido/);
+
+  // Sucesso: cadastro de cliente com teto de crédito de R$ 300,00
+  const cli1 = cadastrarCliente({
+    nome: 'Carlos Eduardo',
+    cpf: '11144477735',
+    telefone: '86999887766',
+    limite_fiado: 300.0,
+    bloqueado_inadimplente: 0
+  });
+  assert.equal(cli1.limite_fiado, 300.0);
+  assert.equal(cli1.saldo_devedor, 0.0);
+
+  // Compra a prazo de R$ 250,00 -> autorizada
+  const c1 = autorizarCompraFiado(cli1.id, 250.0);
+  assert.equal(c1.autorizado, true);
+  assert.equal(c1.novoSaldo, 250.0);
+
+  // Tentativa de compra adicional de R$ 60,00 (totalizaria R$ 310 > R$ 300 teto) -> BLOQUEADA!
+  assert.throws(() => {
+    autorizarCompraFiado(cli1.id, 60.0);
+  }, /Teto de crédito excedido/);
+
+  // 4. Bloqueio Preventivo de Inadimplência
+  const cli2 = cadastrarCliente({
+    nome: 'Empresa Inadimplente ME',
+    cpf: '11222333000181',
+    telefone: '8632321234',
+    limite_fiado: 1000.0,
+    bloqueado_inadimplente: 1,
+    motivo_bloqueio: 'Título protestado em cartório'
+  });
+  assert.equal(cli2.bloqueado_inadimplente, 1);
+
+  // Mesmo tendo saldo zero e limite de R$ 1000,00, a compra no fiado é terminantemente bloqueada!
+  assert.throws(() => {
+    autorizarCompraFiado(cli2.id, 50.0);
+  }, /Título protestado em cartório/);
+
+  // Ao remover o bloqueio preventivo, volta a poder comprar normalmente
+  db.prepare("UPDATE Cliente SET bloqueado_inadimplente = 0, motivo_bloqueio = NULL WHERE id = ?").run(cli2.id);
+  const c2Liberado = autorizarCompraFiado(cli2.id, 100.0);
+  assert.equal(c2Liberado.autorizado, true);
+  assert.equal(c2Liberado.novoSaldo, 100.0);
+});
+
+test('S06 — Item 3: Lotes & Controle de Validade (Prazos de Validade Vinculados a Entradas e Algoritmo de Saída PEPS/FIFO)', () => {
+  const db = setupTestDb();
+  db.prepare(`INSERT INTO Usuario (id, nome, email, senha, cargo) VALUES (1, 'Gerente', 'gerente@mercado.com', 'hash', 'gerente');`).run();
+  db.prepare(`INSERT INTO Fornecedor (id, gerente_id, razao_social) VALUES (1, 1, 'Distribuidora Lácteos');`).run();
+  db.prepare(`INSERT INTO Produto (id, gerente_id, nome, preco_custo, preco_venda, estoque_atual) VALUES (1, 1, 'Iogurte Grego 500g', 4.0, 8.0, 0.0);`).run();
+
+  // 1. Vinculação de Lotes e Prazos de Validade às Entradas de Mercadoria
+  function registrarLoteEntrada(produtoId, numeroLote, dataEntrada, dataValidade, quantidade, custo) {
+    const res = db.prepare(`
+      INSERT INTO LoteEstoque (
+        gerente_id, produto_id, numero_lote, data_entrada, data_validade,
+        quantidade_inicial, quantidade_saldo, custo_unitario, status
+      ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, 'ativo');
+    `).run(produtoId, numeroLote, dataEntrada, dataValidade, quantidade, quantidade, custo);
+
+    // Atualiza estoque do produto
+    db.prepare('UPDATE Produto SET estoque_atual = estoque_atual + ? WHERE id = ?').run(quantidade, produtoId);
+    return Number(res.lastInsertRowid);
+  }
+
+  // Entrada 1: 20 unidades, Lote "LOTE-A", entrou em 2026-10-01, validade: 2027-02-01 (Custo R$ 4.00)
+  registrarLoteEntrada(1, 'LOTE-A', '2026-10-01', '2027-02-01', 20.0, 4.00);
+
+  // Entrada 2: 30 unidades, Lote "LOTE-B", entrou em 2026-10-15, validade: 2027-05-15 (Custo R$ 4.50)
+  registrarLoteEntrada(1, 'LOTE-B', '2026-10-15', '2027-05-15', 30.0, 4.50);
+
+  // Entrada 3: 15 unidades, Lote "LOTE-C", entrou em 2026-10-20, mas com validade mais próxima: 2026-12-15!
+  registrarLoteEntrada(1, 'LOTE-C', '2026-10-20', '2026-12-15', 15.0, 4.20);
+
+  // Estoque total: 20 + 30 + 15 = 65 unidades
+  const prodEstoque = db.prepare('SELECT estoque_atual FROM Produto WHERE id = 1').get();
+  assert.equal(prodEstoque.estoque_atual, 65.0);
+
+  // 2. Algoritmo de Sugestão de Saída PEPS / FIFO (com prioridade FEFO para validades mais próximas)
+  function sugerirSaidaPEPS(produtoId, quantidadeSolicitada, dataHoje = '2026-11-04') {
+    const lotes = db.prepare(`
+      SELECT * FROM LoteEstoque 
+      WHERE produto_id = ? AND quantidade_saldo > 0 AND status = 'ativo'
+      ORDER BY 
+        CASE WHEN data_validade IS NOT NULL AND data_validade != '' THEN 0 ELSE 1 END,
+        data_validade ASC,
+        data_entrada ASC,
+        id ASC;
+    `).all(produtoId);
+
+    let restante = quantidadeSolicitada;
+    const sugestoes = [];
+    const alertas = [];
+
+    for (const lote of lotes) {
+      if (restante <= 0.0001) break;
+
+      const qtdAlocar = Math.min(restante, lote.quantidade_saldo);
+
+      let statusValidade = 'ok';
+      if (lote.data_validade) {
+        if (lote.data_validade < dataHoje) {
+          statusValidade = 'vencido';
+          alertas.push(`ATENÇÃO: Lote ${lote.numero_lote} VENCIDO em ${lote.data_validade}!`);
+        }
+      }
+
+      sugestoes.push({
+        loteId: lote.id,
+        numeroLote: lote.numero_lote,
+        dataValidade: lote.data_validade,
+        dataEntrada: lote.data_entrada,
+        quantidadeSugerida: qtdAlocar,
+        saldoLote: lote.quantidade_saldo,
+        statusValidade
+      });
+
+      restante = round3(restante - qtdAlocar);
+    }
+
+    return {
+      quantidadeSolicitada,
+      quantidadeAtendida: round3(quantidadeSolicitada - restante),
+      sugestoes,
+      alertas
+    };
+  }
+
+  // Solicitação de saída de 25 unidades:
+  // Deve sugerir:
+  // 1º: Lote C (15 un, validade mais próxima: 2026-12-15)
+  // 2º: Lote A (10 un, validade seguinte: 2027-02-01)
+  const sugestao1 = sugerirSaidaPEPS(1, 25.0);
+  assert.equal(sugestao1.quantidadeAtendida, 25.0);
+  assert.equal(sugestao1.sugestoes.length, 2);
+
+  assert.equal(sugestao1.sugestoes[0].numeroLote, 'LOTE-C');
+  assert.equal(sugestao1.sugestoes[0].quantidadeSugerida, 15.0);
+
+  assert.equal(sugestao1.sugestoes[1].numeroLote, 'LOTE-A');
+  assert.equal(sugestao1.sugestoes[1].quantidadeSugerida, 10.0);
+
+  // 3. Efetivação da Baixa no Modelo PEPS / FIFO
+  function baixarLotesPEPS(produtoId, quantidade) {
+    const sug = sugerirSaidaPEPS(produtoId, quantidade);
+    for (const s of sug.sugestoes) {
+      const novoSaldo = round3(s.saldoLote - s.quantidadeSugerida);
+      const novoStatus = novoSaldo <= 0 ? 'esgotado' : 'ativo';
+      db.prepare('UPDATE LoteEstoque SET quantidade_saldo = ?, status = ? WHERE id = ?').run(novoSaldo, novoStatus, s.loteId);
+    }
+    db.prepare('UPDATE Produto SET estoque_atual = estoque_atual - ? WHERE id = ?').run(quantidade, produtoId);
+  }
+
+  baixarLotesPEPS(1, 25.0);
+
+  // Verificações pós-baixa:
+  // Lote C (15 un) foi totalmente consumido -> status = 'esgotado', saldo = 0
+  const loteCFinal = db.prepare("SELECT * FROM LoteEstoque WHERE numero_lote = 'LOTE-C'").get();
+  assert.equal(loteCFinal.status, 'esgotado');
+  assert.equal(loteCFinal.quantidade_saldo, 0.0);
+
+  // Lote A (20 un originais - 10 un baixadas = 10 un restantes) -> status = 'ativo'
+  const loteAFinal = db.prepare("SELECT * FROM LoteEstoque WHERE numero_lote = 'LOTE-A'").get();
+  assert.equal(loteAFinal.status, 'ativo');
+  assert.equal(loteAFinal.quantidade_saldo, 10.0);
+
+  // Lote B permaneceu intocado com 30 un
+  const loteBFinal = db.prepare("SELECT * FROM LoteEstoque WHERE numero_lote = 'LOTE-B'").get();
+  assert.equal(loteBFinal.status, 'ativo');
+  assert.equal(loteBFinal.quantidade_saldo, 30.0);
+
+  // Estoque restante no produto: 65 - 25 = 40 unidades
+  const prodRestante = db.prepare('SELECT estoque_atual FROM Produto WHERE id = 1').get();
+  assert.equal(prodRestante.estoque_atual, 40.0);
+
+  // 4. Detecção e Alerta de Lote Vencido
+  // Insere lote vencido intencionalmente para teste de prevenção
+  registrarLoteEntrada(1, 'LOTE-VENCIDO', '2026-01-01', '2026-05-01', 5.0, 3.0);
+  const sugComVencido = sugerirSaidaPEPS(1, 10.0, '2026-11-04');
+  assert.ok(sugComVencido.alertas.some(a => a.includes('VENCIDO')));
+});
