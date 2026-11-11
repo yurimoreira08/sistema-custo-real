@@ -1,9 +1,10 @@
 import { getDb } from '../database/dbInstance';
 import { syncOrEnqueue } from '../database/syncService';
 import { round2, sumMoney, subtractMoney, toCents, fromCents } from '../utils/money';
+import { hashPassword } from '../utils/crypto';
 
 // ========================================================
-// SERVIÇO DE CAIXA, TURNOS, AUDITORIA E BLOQUEIO (S06)
+// SERVIÇO DE CAIXA, TURNOS, AUDITORIA E BLOQUEIO (S06 / S07)
 // Responsável: Francisco Yuri da Silva Mauriz / Base Conjunta
 // ========================================================
 
@@ -44,6 +45,8 @@ export async function initCashTables(db) {
       saldo_apos REAL NOT NULL,
       origem_referencia TEXT,
       justificativa TEXT,
+      comprovante_hash TEXT,
+      assinatura_digital TEXT,
       data_movimentacao TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (turno_caixa_id) REFERENCES TurnoCaixa(id) ON DELETE CASCADE,
       FOREIGN KEY (operador_id) REFERENCES Usuario(id)
@@ -51,11 +54,18 @@ export async function initCashTables(db) {
 
     CREATE INDEX IF NOT EXISTS idx_turno_operador_status ON TurnoCaixa(operador_id, status);
     CREATE INDEX IF NOT EXISTS idx_mov_caixa_turno ON MovimentacaoCaixa(turno_caixa_id, data_movimentacao ASC);
+    CREATE INDEX IF NOT EXISTS idx_mov_comprovante ON MovimentacaoCaixa(comprovante_hash);
   `);
 
-  // Adiciona coluna turno_caixa_id na tabela Venda caso ainda não exista
+  // Migrações de colunas para bancos existentes
   try {
     await db.execAsync("ALTER TABLE Venda ADD COLUMN turno_caixa_id INTEGER;");
+  } catch (e) {}
+  try {
+    await db.execAsync("ALTER TABLE MovimentacaoCaixa ADD COLUMN comprovante_hash TEXT;");
+  } catch (e) {}
+  try {
+    await db.execAsync("ALTER TABLE MovimentacaoCaixa ADD COLUMN assinatura_digital TEXT;");
   } catch (e) {}
 }
 
@@ -175,7 +185,80 @@ export async function desbloquearTurnoCaixa({ turnoId, operadorId, justificativa
 }
 
 /**
+ * Gera assinatura digital SHA-256 e hash canônico de auditoria para a movimentação de caixa
+ */
+export function gerarAssinaturaMovimentacao(movimentacao) {
+  const payloadCanonico = [
+    movimentacao.turno_caixa_id,
+    movimentacao.gerente_id,
+    movimentacao.operador_id,
+    movimentacao.tipo_operacao,
+    Number(movimentacao.valor || 0).toFixed(2),
+    Number(movimentacao.saldo_apos || 0).toFixed(2),
+    movimentacao.origem_referencia || '',
+    movimentacao.justificativa || '',
+    movimentacao.data_movimentacao || ''
+  ].join('|');
+
+  const hash = hashPassword(payloadCanonico);
+  const tipoPrefixo = (movimentacao.tipo_operacao || 'MOV').substring(0, 3).toUpperCase();
+  const codigoAutenticacao = `LC-${tipoPrefixo}-${hash.substring(0, 12).toUpperCase()}`;
+
+  return {
+    hash,
+    codigoAutenticacao,
+    payloadCanonico
+  };
+}
+
+/**
+ * Valida a autenticidade e integridade do comprovante digital da movimentação
+ */
+export function validarComprovanteDigital(movimentacao) {
+  if (!movimentacao || !movimentacao.assinatura_digital) return false;
+  const assin = gerarAssinaturaMovimentacao(movimentacao);
+  return assin.hash === movimentacao.assinatura_digital;
+}
+
+/**
+ * Busca e estrutura o comprovante assinado de uma movimentação específica de caixa
+ */
+export async function obterComprovanteMovimentacao(movId, gerenteId, dbOverride = null) {
+  const db = dbOverride || await getDb();
+  const rows = await db.getAllAsync(
+    `SELECT m.*, u.nome as operador_nome, tc.status as turno_status, tc.data_abertura as turno_data_abertura
+     FROM MovimentacaoCaixa m
+     LEFT JOIN Usuario u ON u.id = m.operador_id
+     LEFT JOIN TurnoCaixa tc ON tc.id = m.turno_caixa_id
+     WHERE m.id = ? AND m.gerente_id = ? LIMIT 1;`,
+    [movId, gerenteId]
+  );
+  if (rows.length === 0) return null;
+  const m = rows[0];
+
+  const valido = validarComprovanteDigital(m);
+  return {
+    id: m.id,
+    turnoId: m.turno_caixa_id,
+    tipo: m.tipo_operacao,
+    formaPagamento: m.forma_pagamento || 'dinheiro',
+    valor: m.valor,
+    saldoApos: m.saldo_apos,
+    origemReferencia: m.origem_referencia,
+    justificativa: m.justificativa,
+    dataMovimentacao: m.data_movimentacao,
+    operadorId: m.operador_id,
+    operadorNome: m.operador_nome || 'Operador',
+    comprovanteHash: m.comprovante_hash,
+    assinaturaDigital: m.assinatura_digital,
+    valido,
+    autenticado: true
+  };
+}
+
+/**
  * Realiza suprimento (entrada de troco) ou sangria (retirada de segurança)
+ * Gerando comprovante assinado digitalmente com hash SHA-256
  */
 export async function registrarSuprimentoSangria({ turnoId, operadorId, tipo, valor, justificativa, gerenteId }, dbOverride = null) {
   const db = dbOverride || await getDb();
@@ -230,14 +313,51 @@ export async function registrarSuprimentoSangria({ turnoId, operadorId, tipo, va
     );
   }
 
-  await db.runAsync(
+  const origemRef = `${tipoUpper}-${turnoId}`;
+  const movProvisoria = {
+    turno_caixa_id: turnoId,
+    gerente_id: gerenteId,
+    operador_id: operadorId,
+    tipo_operacao: tipoUpper,
+    valor: vNum,
+    saldo_apos: novoSaldoEsperado,
+    origem_referencia: origemRef,
+    justificativa: just,
+    data_movimentacao: now
+  };
+
+  const { hash, codigoAutenticacao } = gerarAssinaturaMovimentacao(movProvisoria);
+
+  const resMov = await db.runAsync(
     `INSERT INTO MovimentacaoCaixa (
-      turno_caixa_id, gerente_id, operador_id, tipo_operacao, forma_pagamento, valor, saldo_apos, origem_referencia, justificativa, data_movimentacao
-    ) VALUES (?, ?, ?, ?, 'dinheiro', ?, ?, ?, ?, ?);`,
-    [turnoId, gerenteId, operadorId, tipoUpper, vNum, novoSaldoEsperado, `${tipoUpper}-${turnoId}`, just, now]
+      turno_caixa_id, gerente_id, operador_id, tipo_operacao, forma_pagamento, valor, saldo_apos, origem_referencia, justificativa, comprovante_hash, assinatura_digital, data_movimentacao
+    ) VALUES (?, ?, ?, ?, 'dinheiro', ?, ?, ?, ?, ?, ?, ?);`,
+    [turnoId, gerenteId, operadorId, tipoUpper, vNum, novoSaldoEsperado, origemRef, just, codigoAutenticacao, hash, now]
   );
 
+  const movId = resMov.lastInsertRowId;
   const atualizado = await obterTurnoPorId(turnoId, gerenteId, db);
+
+  const comprovante = {
+    id: movId,
+    turnoId,
+    tipo: tipoUpper,
+    valor: vNum,
+    saldoAnterior: turno.saldo_esperado_dinheiro,
+    saldoApos: novoSaldoEsperado,
+    justificativa: just,
+    dataMovimentacao: now,
+    operadorId,
+    gerenteId,
+    comprovanteHash: codigoAutenticacao,
+    assinaturaDigital: hash,
+    codigoAutenticacao,
+    valido: true
+  };
+
+  atualizado.comprovante = comprovante;
+  atualizado.ultimoComprovante = comprovante;
+
   await syncOrEnqueue('TurnoCaixa', 'upsert', atualizado);
   return atualizado;
 }
@@ -365,32 +485,97 @@ export async function registrarVendaNoCaixa({ turnoId, vendaId, valorDinheiro = 
 }
 
 /**
- * Estorna venda do caixa (em caso de cancelamento)
+ * Estorna venda do caixa (em caso de cancelamento ou devolução)
+ * Garante que a dedução do valor seja refletida diretamente no saldo da gaveta de caixa atual
  */
-export async function estornarVendaDoCaixa({ turnoId, vendaId, valorDinheiro = 0, operadorId, gerenteId, justificativa }, dbOverride = null) {
+export async function estornarVendaDoCaixa({ turnoId, vendaId, valorDinheiro = 0, operadorId, gerenteId, justificativa, origemReferencia }, dbOverride = null) {
   const db = dbOverride || await getDb();
   const vDinheiro = parseFloat(valorDinheiro) || 0;
-  if (vDinheiro <= 0 || !turnoId) return;
+  if (vDinheiro <= 0) return null;
 
-  const turno = await obterTurnoPorId(turnoId, gerenteId, db);
-  if (!turno) return;
+  // 1. Localiza o turno ativo da gaveta atual
+  let turnoAlvo = null;
+  if (turnoId) {
+    const t = await obterTurnoPorId(turnoId, gerenteId, db);
+    if (t && t.status === 'aberto') {
+      turnoAlvo = t;
+    }
+  }
 
-  const novoSaldoEsperado = subtractMoney(turno.saldo_esperado_dinheiro, vDinheiro);
-  const novoTotalDinheiro = Math.max(0, subtractMoney(turno.total_vendas_dinheiro, vDinheiro));
+  // Se o turno da venda estiver fechado ou não informado, reflete no turno de caixa atualmente aberto
+  if (!turnoAlvo) {
+    if (operadorId) {
+      turnoAlvo = await obterTurnoAtivo(operadorId, gerenteId, db);
+    }
+    if (!turnoAlvo) {
+      // Busca qualquer turno aberto do estabelecimento
+      const abertos = await db.getAllAsync(
+        "SELECT * FROM TurnoCaixa WHERE gerente_id = ? AND status = 'aberto' ORDER BY id DESC LIMIT 1;",
+        [gerenteId]
+      );
+      if (abertos.length > 0) {
+        turnoAlvo = abertos[0];
+      }
+    }
+  }
+
+  if (!turnoAlvo) {
+    console.warn('[CashService] Nenhum turno de caixa aberto encontrado para abater estorno em dinheiro.');
+    return null;
+  }
+
+  const novoSaldoEsperado = subtractMoney(turnoAlvo.saldo_esperado_dinheiro, vDinheiro);
+  const novoTotalDinheiro = Math.max(0, subtractMoney(turnoAlvo.total_vendas_dinheiro, vDinheiro));
+  const now = new Date().toISOString();
+  const ref = origemReferencia || `CANCEL-VENDA-${vendaId}`;
+  const just = justificativa || 'Estorno de venda cancelada';
 
   await db.runAsync(
     `UPDATE TurnoCaixa 
      SET total_vendas_dinheiro = ?, saldo_esperado_dinheiro = ?
      WHERE id = ? AND gerente_id = ?;`,
-    [novoTotalDinheiro, novoSaldoEsperado, turnoId, gerenteId]
+    [novoTotalDinheiro, novoSaldoEsperado, turnoAlvo.id, gerenteId]
   );
 
-  await db.runAsync(
+  const movProvisoria = {
+    turno_caixa_id: turnoAlvo.id,
+    gerente_id: gerenteId,
+    operador_id: operadorId || turnoAlvo.operador_id,
+    tipo_operacao: 'ESTORNO',
+    valor: vDinheiro,
+    saldo_apos: novoSaldoEsperado,
+    origem_referencia: ref,
+    justificativa: just,
+    data_movimentacao: now
+  };
+
+  const { hash, codigoAutenticacao } = gerarAssinaturaMovimentacao(movProvisoria);
+
+  const resMov = await db.runAsync(
     `INSERT INTO MovimentacaoCaixa (
-      turno_caixa_id, gerente_id, operador_id, tipo_operacao, forma_pagamento, valor, saldo_apos, origem_referencia, justificativa
-    ) VALUES (?, ?, ?, 'ESTORNO', 'dinheiro', ?, ?, ?, ?);`,
-    [turnoId, gerenteId, operadorId, vDinheiro, novoSaldoEsperado, `CANCEL-VENDA-${vendaId}`, justificativa || 'Estorno de venda cancelada']
+      turno_caixa_id, gerente_id, operador_id, tipo_operacao, forma_pagamento, valor, saldo_apos, origem_referencia, justificativa, comprovante_hash, assinatura_digital, data_movimentacao
+    ) VALUES (?, ?, ?, 'ESTORNO', 'dinheiro', ?, ?, ?, ?, ?, ?, ?);`,
+    [turnoAlvo.id, gerenteId, operadorId || turnoAlvo.operador_id, vDinheiro, novoSaldoEsperado, ref, just, codigoAutenticacao, hash, now]
   );
+
+  const atualizado = await obterTurnoPorId(turnoAlvo.id, gerenteId, db);
+  await syncOrEnqueue('TurnoCaixa', 'upsert', atualizado);
+
+  return {
+    turno: atualizado,
+    comprovanteEstorno: {
+      id: resMov.lastInsertRowId,
+      turnoId: turnoAlvo.id,
+      tipo: 'ESTORNO',
+      valor: vDinheiro,
+      saldoApos: novoSaldoEsperado,
+      origemReferencia: ref,
+      justificativa: just,
+      comprovanteHash: codigoAutenticacao,
+      assinaturaDigital: hash,
+      dataMovimentacao: now
+    }
+  };
 }
 
 /**

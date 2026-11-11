@@ -187,6 +187,12 @@ export default function CheckoutPaymentModal({
     setPagamentos(updated);
   };
 
+  const totalFiado = parseFloat(
+    pagamentos.filter(p => p.forma_pagamento === 'fiado').reduce((acc, p) => acc + (parseFloat(p.valor) || 0), 0).toFixed(2)
+  );
+
+  const selectedClientObj = clientes.find(c => c.id === selectedClienteId) || null;
+
   const handleFinalize = () => {
     setErroMsg('');
 
@@ -197,9 +203,27 @@ export default function CheckoutPaymentModal({
       return;
     }
 
-    if (temFiado && !selectedClienteId) {
-      setErroMsg('Selecione um cliente para autorizar o pagamento em Fiado.');
-      return;
+    if (temFiado) {
+      if (!selectedClienteId) {
+        setErroMsg('Selecione um cliente para autorizar o pagamento em Fiado.');
+        return;
+      }
+      const cli = clientes.find(c => c.id === selectedClienteId);
+      if (!cli) {
+        setErroMsg('Cliente selecionado não foi encontrado.');
+        return;
+      }
+      if (cli.bloqueado_inadimplente === 1) {
+        setErroMsg(`Venda bloqueada: O cliente "${cli.nome}" está com bloqueio preventivo de crédito (${cli.motivo_bloqueio || 'Inadimplência registrada'}).`);
+        return;
+      }
+      const saldoAtual = Number(cli.saldo_devedor) || 0;
+      const limite = Number(cli.limite_fiado) || 0;
+      if (limite > 0 && (saldoAtual + totalFiado) > (limite + 0.001)) {
+        const disponivel = Math.max(0, limite - saldoAtual);
+        setErroMsg(`Teto de crédito excedido para "${cli.nome}"! Limite: ${formatCurrency(limite)}, Saldo: ${formatCurrency(saldoAtual)}, Disponível: ${formatCurrency(disponivel)}, Tentativa Fiado: ${formatCurrency(totalFiado)}.`);
+        return;
+      }
     }
 
     onConfirmSale({
@@ -316,6 +340,57 @@ export default function CheckoutPaymentModal({
                   );
                 })}
               </ScrollView>
+
+              {/* Informações de Crédito em Tempo Real do Cliente Selecionado */}
+              {selectedClientObj && (
+                <View style={[
+                  styles.clientCreditBox,
+                  selectedClientObj.bloqueado_inadimplente === 1
+                    ? styles.clientCreditBoxBlocked
+                    : (selectedClientObj.limite_fiado > 0 && selectedClientObj.saldo_devedor >= selectedClientObj.limite_fiado)
+                      ? styles.clientCreditBoxWarning
+                      : styles.clientCreditBoxOk
+                ]}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                    <Text style={styles.clientCreditTitle}>👤 {selectedClientObj.nome}</Text>
+                    {selectedClientObj.bloqueado_inadimplente === 1 ? (
+                      <View style={styles.badgeBlocked}>
+                        <Text style={styles.badgeBlockedText}>BLOQUEADO</Text>
+                      </View>
+                    ) : (
+                      <View style={styles.badgeDisponivel}>
+                        <Text style={styles.badgeDisponivelText}>
+                          Disponível: {formatCurrency(Math.max(0, (selectedClientObj.limite_fiado || 0) - (selectedClientObj.saldo_devedor || 0)))}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+
+                  <View style={styles.clientCreditRow}>
+                    <Text style={styles.clientCreditLabel}>
+                      Teto: <Text style={{ fontWeight: 'bold' }}>{formatCurrency(selectedClientObj.limite_fiado)}</Text>
+                    </Text>
+                    <Text style={styles.clientCreditLabel}>
+                      Débito Atual: <Text style={{ fontWeight: 'bold', color: '#C53030' }}>{formatCurrency(selectedClientObj.saldo_devedor)}</Text>
+                    </Text>
+                  </View>
+
+                  {temFiado && (
+                    <View style={styles.clientCreditProjRow}>
+                      <Text style={styles.clientCreditProjLabel}>Projeção com esta venda:</Text>
+                      <Text style={[
+                        styles.clientCreditProjValue,
+                        (selectedClientObj.limite_fiado > 0 && (Number(selectedClientObj.saldo_devedor) + totalFiado) > selectedClientObj.limite_fiado)
+                          ? { color: '#E53E3E' }
+                          : { color: '#276749' }
+                      ]}>
+                        {formatCurrency(Number(selectedClientObj.saldo_devedor) + totalFiado)}
+                        {(selectedClientObj.limite_fiado > 0 && (Number(selectedClientObj.saldo_devedor) + totalFiado) > selectedClientObj.limite_fiado) ? ' (EXCEDE O LIMITE ⚠)' : ' (Dentro do teto ✓)'}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              )}
             </View>
 
             {/* Pagamentos da Venda */}
@@ -825,5 +900,77 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#718096',
     marginBottom: 8
+  },
+  clientCreditBox: {
+    padding: 10,
+    borderRadius: 8,
+    marginTop: 6,
+    borderWidth: 1
+  },
+  clientCreditBoxOk: {
+    backgroundColor: '#F0FFF4',
+    borderColor: '#9AE6B4'
+  },
+  clientCreditBoxWarning: {
+    backgroundColor: '#FFFAF0',
+    borderColor: '#FBD38D'
+  },
+  clientCreditBoxBlocked: {
+    backgroundColor: '#FFF5F5',
+    borderColor: '#FEB2B2'
+  },
+  clientCreditTitle: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#2D3748'
+  },
+  badgeBlocked: {
+    backgroundColor: '#E53E3E',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4
+  },
+  badgeBlockedText: {
+    fontSize: 9,
+    fontWeight: 'bold',
+    color: '#FFF'
+  },
+  badgeDisponivel: {
+    backgroundColor: '#DEF7EC',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4
+  },
+  badgeDisponivelText: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: '#03543F'
+  },
+  clientCreditRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 2
+  },
+  clientCreditLabel: {
+    fontSize: 11,
+    color: '#4A5568'
+  },
+  clientCreditProjRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingTop: 4,
+    marginTop: 4,
+    borderTopWidth: 1,
+    borderTopColor: '#E2E8F0'
+  },
+  clientCreditProjLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#4A5568'
+  },
+  clientCreditProjValue: {
+    fontSize: 11,
+    fontWeight: 'bold'
   }
 });

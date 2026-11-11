@@ -18,6 +18,11 @@ ALTER TABLE "ItensEntrada"         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "MovimentacaoEstoque"  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "PerdaEstoque"         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "Configuracoes"         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "TurnoCaixa"            ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "MovimentacaoCaixa"     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "PagamentoDebitoCliente" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "LoteEstoque"           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "BaixaLote"             ENABLE ROW LEVEL SECURITY;
 
 DO $$
 DECLARE
@@ -26,7 +31,8 @@ DECLARE
     'Usuario', 'Fornecedor', 'Cliente', 'Produto', 'FormaPagamentoConfig',
     'Venda', 'ItensVenda', 'PagamentoVenda', 'CancelamentoVenda',
     'DevolucaoVenda', 'ItensDevolucao', 'EntradaMercadoria', 'ItensEntrada',
-    'MovimentacaoEstoque', 'PerdaEstoque', 'Configuracoes'
+    'MovimentacaoEstoque', 'PerdaEstoque', 'Configuracoes',
+    'TurnoCaixa', 'MovimentacaoCaixa', 'PagamentoDebitoCliente', 'LoteEstoque', 'BaixaLote'
   ];
 BEGIN
   FOREACH t IN ARRAY tables LOOP

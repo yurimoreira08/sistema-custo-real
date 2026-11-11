@@ -31,6 +31,22 @@ export async function initClienteTable(db) {
     CREATE INDEX IF NOT EXISTS idx_cliente_nome ON Cliente(nome);
     CREATE INDEX IF NOT EXISTS idx_cliente_cpf ON Cliente(cpf);
     CREATE INDEX IF NOT EXISTS idx_cliente_inadimplente ON Cliente(bloqueado_inadimplente);
+
+    CREATE TABLE IF NOT EXISTS PagamentoDebitoCliente (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      gerente_id INTEGER NOT NULL,
+      cliente_id INTEGER NOT NULL,
+      operador_id INTEGER NOT NULL,
+      valor REAL NOT NULL,
+      forma_pagamento TEXT NOT NULL DEFAULT 'dinheiro',
+      observacoes TEXT,
+      saldo_anterior REAL NOT NULL,
+      saldo_resultante REAL NOT NULL,
+      data_pagamento TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (cliente_id) REFERENCES Cliente(id),
+      FOREIGN KEY (operador_id) REFERENCES Usuario(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_pag_debito_cliente ON PagamentoDebitoCliente(cliente_id, data_pagamento DESC);
   `);
 
   // Migrações seguras de colunas caso a tabela já exista de versões anteriores
@@ -267,4 +283,238 @@ export async function estornarFiado(clienteId, valor, gerenteId, dbOverride = nu
   if (updated) {
     await syncOrEnqueue('Cliente', 'upsert', updated);
   }
+}
+
+/**
+ * Consulta o extrato de transações de fiado por cliente, exibindo histórico
+ * cronológico de compras a prazo, estornos, pagamentos e saldo em aberto acumulado.
+ */
+export async function fetchExtratoCliente(clienteId, gerenteId, dbOverride = null) {
+  const db = dbOverride || await getDb();
+  const cliente = await getClienteById(clienteId, gerenteId, db);
+  if (!cliente) {
+    throw new Error('Cliente não encontrado para gerar extrato.');
+  }
+
+  // 1. Busca todas as compras com pagamento em Fiado
+  const comprasFiado = await db.getAllAsync(
+    `SELECT 
+       v.id as venda_id,
+       v.data_venda,
+       v.canal_venda,
+       v.valor_total as venda_valor_total,
+       v.status as venda_status,
+       pv.id as pagamento_id,
+       pv.valor_bruto as valor_fiado,
+       pv.estornado
+     FROM PagamentoVenda pv
+     JOIN Venda v ON v.id = pv.venda_id
+     WHERE pv.forma_pagamento = 'fiado' 
+       AND v.cliente_id = ? 
+       AND v.gerente_id = ?
+     ORDER BY v.data_venda ASC, v.id ASC;`,
+    [clienteId, gerenteId]
+  );
+
+  // 2. Busca estornos de cancelamentos de vendas a prazo
+  const cancelamentos = await db.getAllAsync(
+    `SELECT 
+       c.id as cancelamento_id,
+       c.venda_id,
+       c.justificativa,
+       c.data_cancelamento,
+       pv.valor_bruto as valor_estornado
+     FROM CancelamentoVenda c
+     JOIN Venda v ON v.id = c.venda_id
+     JOIN PagamentoVenda pv ON pv.venda_id = v.id AND pv.forma_pagamento = 'fiado'
+     WHERE v.cliente_id = ? AND v.gerente_id = ?
+     ORDER BY c.data_cancelamento ASC, c.id ASC;`,
+    [clienteId, gerenteId]
+  );
+
+  // 3. Busca devoluções com abatimento de fiado
+  const devolucoes = await db.getAllAsync(
+    `SELECT 
+       d.id as devolucao_id,
+       d.venda_id,
+       d.motivo,
+       d.valor_estornado,
+       d.data_devolucao
+     FROM DevolucaoVenda d
+     JOIN Venda v ON v.id = d.venda_id
+     WHERE v.cliente_id = ? AND v.gerente_id = ?
+     ORDER BY d.data_devolucao ASC, d.id ASC;`,
+    [clienteId, gerenteId]
+  );
+
+  // 4. Busca pagamentos / amortizações diretas de débito
+  let pagamentosDebito = [];
+  try {
+    pagamentosDebito = await db.getAllAsync(
+      `SELECT * FROM PagamentoDebitoCliente
+       WHERE cliente_id = ? AND gerente_id = ?
+       ORDER BY data_pagamento ASC, id ASC;`,
+      [clienteId, gerenteId]
+    );
+  } catch (e) {}
+
+  // 5. Consolida todas as movimentações em ordem cronológica
+  const eventos = [];
+
+  for (const c of comprasFiado) {
+    eventos.push({
+      tipo: 'COMPRA_FIADO',
+      tipoOperacao: 'DEBITO', // Aumenta o saldo devedor
+      data: c.data_venda,
+      valor: parseFloat(c.valor_fiado) || 0,
+      referencia: `Venda #${c.venda_id}`,
+      vendaId: c.venda_id,
+      descricao: `Compra a prazo (${c.canal_venda || 'balcão'}) - Venda #${c.venda_id}`,
+      estornado: c.estornado === 1 || c.venda_status === 'cancelada'
+    });
+  }
+
+  for (const c of cancelamentos) {
+    eventos.push({
+      tipo: 'CANCELAMENTO_ESTORNO',
+      tipoOperacao: 'CREDITO', // Diminui o saldo devedor
+      data: c.data_cancelamento,
+      valor: parseFloat(c.valor_estornado) || 0,
+      referencia: `Cancelamento Venda #${c.venda_id}`,
+      vendaId: c.venda_id,
+      descricao: `Estorno de venda cancelada: ${c.justificativa || 'Sem justificativa'}`
+    });
+  }
+
+  for (const d of devolucoes) {
+    eventos.push({
+      tipo: 'DEVOLUCAO_ESTORNO',
+      tipoOperacao: 'CREDITO', // Diminui o saldo devedor
+      data: d.data_devolucao,
+      valor: parseFloat(d.valor_estornado) || 0,
+      referencia: `Devolução Venda #${d.venda_id}`,
+      vendaId: d.venda_id,
+      descricao: `Estorno devolução parcial: ${d.motivo || 'Devolução de mercadoria'}`
+    });
+  }
+
+  for (const p of pagamentosDebito) {
+    eventos.push({
+      tipo: 'PAGAMENTO_DEBITO',
+      tipoOperacao: 'CREDITO', // Diminui o saldo devedor
+      data: p.data_pagamento,
+      valor: parseFloat(p.valor) || 0,
+      referencia: `Recibo #${p.id}`,
+      descricao: `Amortização de fiado (${p.forma_pagamento.toUpperCase()}): ${p.observacoes || 'Pagamento de conta'}`
+    });
+  }
+
+  // Ordena cronologicamente para reconstruir o saldo acumulado de forma exata
+  eventos.sort((a, b) => new Date(a.data).getTime() - new Date(b.data).getTime());
+
+  let saldoAcumulado = 0;
+  let totalComprasFiado = 0;
+  let totalEstornos = 0;
+  let totalPagamentos = 0;
+
+  const transacoesComSaldo = eventos.map((ev, idx) => {
+    if (ev.tipoOperacao === 'DEBITO') {
+      saldoAcumulado = Math.round((saldoAcumulado + ev.valor) * 100) / 100;
+      totalComprasFiado = Math.round((totalComprasFiado + ev.valor) * 100) / 100;
+    } else {
+      saldoAcumulado = Math.max(0, Math.round((saldoAcumulado - ev.valor) * 100) / 100);
+      if (ev.tipo === 'PAGAMENTO_DEBITO') {
+        totalPagamentos = Math.round((totalPagamentos + ev.valor) * 100) / 100;
+      } else {
+        totalEstornos = Math.round((totalEstornos + ev.valor) * 100) / 100;
+      }
+    }
+
+    return {
+      id: idx + 1,
+      ...ev,
+      saldoAcumuladoApos: saldoAcumulado
+    };
+  });
+
+  const limite = Number(cliente.limite_fiado) || 0;
+  const saldoAtual = Number(cliente.saldo_devedor) || 0;
+  const limiteDisponivel = Math.max(0, Math.round((limite - saldoAtual) * 100) / 100);
+
+  // Retorna transações em ordem decrescente (mais recentes primeiro para a UI)
+  const transacoesDesc = [...transacoesComSaldo].reverse();
+
+  return {
+    cliente: {
+      id: cliente.id,
+      nome: cliente.nome,
+      cpf: cliente.cpf,
+      telefone: cliente.telefone,
+      email: cliente.email,
+      limiteFiado: limite,
+      saldoDevedor: saldoAtual,
+      bloqueadoInadimplente: cliente.bloqueado_inadimplente === 1,
+      motivoBloqueio: cliente.motivo_bloqueio
+    },
+    totais: {
+      totalComprasFiado,
+      totalEstornos,
+      totalPagamentos,
+      saldoDevedorAtual: saldoAtual,
+      limiteFiado: limite,
+      limiteDisponivel
+    },
+    transacoes: transacoesDesc
+  };
+}
+
+/**
+ * Registra o recebimento de pagamento de débito/fiado de um cliente
+ */
+export async function registrarPagamentoDebitoCliente({ clienteId, valor, formaPagamento = 'dinheiro', operadorId, gerenteId, observacoes = null }, dbOverride = null) {
+  const db = dbOverride || await getDb();
+  const vNum = parseFloat(valor);
+  if (isNaN(vNum) || vNum <= 0) {
+    throw new Error('Valor do pagamento deve ser maior que zero.');
+  }
+
+  const cliente = await getClienteById(clienteId, gerenteId, db);
+  if (!cliente) {
+    throw new Error('Cliente não encontrado.');
+  }
+
+  const saldoAnt = Number(cliente.saldo_devedor) || 0;
+  if (saldoAnt <= 0) {
+    throw new Error(`O cliente "${cliente.nome}" não possui saldo devedor em aberto.`);
+  }
+
+  const valorEfetivo = Math.min(vNum, saldoAnt);
+  const saldoRes = Math.max(0, Math.round((saldoAnt - valorEfetivo) * 100) / 100);
+  const now = new Date().toISOString();
+
+  await db.runAsync(
+    `INSERT INTO PagamentoDebitoCliente (
+      gerente_id, cliente_id, operador_id, valor, forma_pagamento, observacoes, saldo_anterior, saldo_resultante, data_pagamento
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+    [gerenteId, clienteId, operadorId || 1, valorEfetivo, formaPagamento, observacoes || 'Amortização de fiado', saldoAnt, saldoRes, now]
+  );
+
+  // Atualiza saldo na tabela Cliente
+  await db.runAsync(
+    `UPDATE Cliente 
+     SET saldo_devedor = ?, updated_at = datetime('now')
+     WHERE id = ? AND gerente_id = ?;`,
+    [saldoRes, clienteId, gerenteId]
+  );
+
+  const updated = await getClienteById(clienteId, gerenteId, db);
+  await syncOrEnqueue('Cliente', 'upsert', updated);
+
+  return {
+    cliente: updated,
+    valorPago: valorEfetivo,
+    saldoAnterior: saldoAnt,
+    saldoRestante: saldoRes,
+    dataPagamento: now
+  };
 }

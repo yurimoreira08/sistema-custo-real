@@ -13,7 +13,13 @@ import {
   Switch
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { fetchClientes, saveCliente, alterarBloqueioInadimplente } from '../services/clientService';
+import { 
+  fetchClientes, 
+  saveCliente, 
+  alterarBloqueioInadimplente,
+  fetchExtratoCliente,
+  registrarPagamentoDebitoCliente
+} from '../services/clientService';
 import { formatarDocumento, formatarTelefone, validarDocumento, validarTelefone } from '../utils/validators';
 
 export default function ClientsModal({
@@ -39,6 +45,16 @@ export default function ClientsModal({
   const [bloqueadoInadimplente, setBloqueadoInadimplente] = useState(false);
   const [motivoBloqueio, setMotivoBloqueio] = useState('');
   const [salvando, setSalvando] = useState(false);
+
+  // Estados do Extrato da Caderneta (S07)
+  const [modoExtrato, setModoExtrato] = useState(false);
+  const [extratoClienteObj, setExtratoClienteObj] = useState(null);
+  const [extratoData, setExtratoData] = useState(null);
+  const [extratoLoading, setExtratoLoading] = useState(false);
+  const [valorPagamentoDebito, setValorPagamentoDebito] = useState('');
+  const [formaPagamentoDebito, setFormaPagamentoDebito] = useState('dinheiro');
+  const [obsPagamentoDebito, setObsPagamentoDebito] = useState('');
+  const [salvandoPagamento, setSalvandoPagamento] = useState(false);
 
   useEffect(() => {
     if (visible && gerenteId) {
@@ -166,6 +182,58 @@ export default function ClientsModal({
     }
   };
 
+  const abrirExtratoCliente = async (cli) => {
+    setModoEdicao(false);
+    setModoExtrato(true);
+    setExtratoClienteObj(cli);
+    setExtratoLoading(true);
+    setErroMsg('');
+    setSucessoMsg('');
+    setValorPagamentoDebito('');
+    try {
+      const ext = await fetchExtratoCliente(cli.id, gerenteId);
+      setExtratoData(ext);
+    } catch (e) {
+      console.error('Erro ao consultar extrato:', e);
+      setErroMsg(e.message || 'Erro ao consultar extrato de fiado.');
+    } finally {
+      setExtratoLoading(false);
+    }
+  };
+
+  const handleRegistrarPagamento = async () => {
+    if (!extratoData || !extratoData.cliente) return;
+    setErroMsg('');
+    const val = parseFloat((valorPagamentoDebito || '').replace(',', '.'));
+    if (isNaN(val) || val <= 0) {
+      setErroMsg('Informe um valor de pagamento válido maior que zero.');
+      return;
+    }
+
+    setSalvandoPagamento(true);
+    try {
+      const res = await registrarPagamentoDebitoCliente({
+        clienteId: extratoData.cliente.id,
+        valor: val,
+        formaPagamento: formaPagamentoDebito,
+        operadorId: 1,
+        gerenteId,
+        observacoes: obsPagamentoDebito.trim() || 'Amortização de fiado na caderneta'
+      });
+      setSucessoMsg(`Pagamento de ${formatCurrency(res.valorPago)} recebido com sucesso! Saldo restante: ${formatCurrency(res.saldoRestante)}.`);
+      setValorPagamentoDebito('');
+      setObsPagamentoDebito('');
+      // Recarrega extrato e lista de clientes
+      const extAtualizado = await fetchExtratoCliente(extratoData.cliente.id, gerenteId);
+      setExtratoData(extAtualizado);
+      await carregarClientes();
+    } catch (e) {
+      setErroMsg(e.message || 'Erro ao registrar pagamento.');
+    } finally {
+      setSalvandoPagamento(false);
+    }
+  };
+
   const clientesFiltrados = clientes.filter(c =>
     c.nome.toLowerCase().includes(search.toLowerCase()) ||
     (c.cpf && c.cpf.includes(search)) ||
@@ -208,7 +276,185 @@ export default function ClientsModal({
               </View>
             ) : null}
 
-            {modoEdicao ? (
+            {modoExtrato ? (
+              /* TELA DE EXTRATO DA CADERNETA / HISTÓRICO DE FIADO (S07) */
+              <View style={styles.extratoContainer}>
+                <View style={styles.extratoHeaderNav}>
+                  <TouchableOpacity style={styles.btnVoltarExtrato} onPress={() => setModoExtrato(false)}>
+                    <Ionicons name="arrow-back" size={16} color="#1E63EC" style={{ marginRight: 4 }} />
+                    <Text style={styles.btnVoltarExtratoText}>Voltar aos Clientes</Text>
+                  </TouchableOpacity>
+                  <Text style={styles.extratoSectionTitle}>Caderneta Digital</Text>
+                </View>
+
+                {extratoLoading || !extratoData ? (
+                  <View style={styles.centerLoading}>
+                    <ActivityIndicator size="large" color="#1E63EC" />
+                    <Text style={styles.loadingText}>Carregando extrato de transações...</Text>
+                  </View>
+                ) : (
+                  <>
+                    {/* Cartão de Identificação do Cliente */}
+                    <View style={styles.extratoClienteCard}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.extratoClienteNome}>{extratoData.cliente.nome}</Text>
+                        <Text style={styles.extratoClienteDoc}>
+                          Doc: {extratoData.cliente.cpf || 'Não informado'} • Fone: {extratoData.cliente.telefone || 'Não informado'}
+                        </Text>
+                      </View>
+                      {extratoData.cliente.bloqueadoInadimplente ? (
+                        <View style={styles.badgeBloqueado}>
+                          <Text style={styles.badgeBloqueadoText}>BLOQUEADO</Text>
+                        </View>
+                      ) : (
+                        <View style={styles.badgeAdimplente}>
+                          <Text style={styles.badgeAdimplenteText}>ATIVO</Text>
+                        </View>
+                      )}
+                    </View>
+
+                    {/* Resumo Financeiro em 3 Cards */}
+                    <View style={styles.extratoResumoRow}>
+                      <View style={[styles.extratoResumoCard, { backgroundColor: '#F7FAFC' }]}>
+                        <Text style={styles.extratoResumoLabel}>TETO CRÉDITO</Text>
+                        <Text style={[styles.extratoResumoVal, { color: '#4A5568' }]}>
+                          {formatCurrency(extratoData.totais.limiteFiado)}
+                        </Text>
+                      </View>
+
+                      <View style={[styles.extratoResumoCard, { backgroundColor: '#FFF5F5' }]}>
+                        <Text style={styles.extratoResumoLabel}>DÉBITO ATUAL</Text>
+                        <Text style={[styles.extratoResumoVal, { color: extratoData.totais.saldoDevedorAtual > 0 ? '#C53030' : '#276749' }]}>
+                          {formatCurrency(extratoData.totais.saldoDevedorAtual)}
+                        </Text>
+                      </View>
+
+                      <View style={[styles.extratoResumoCard, { backgroundColor: '#F0FFF4' }]}>
+                        <Text style={styles.extratoResumoLabel}>DISPONÍVEL</Text>
+                        <Text style={[styles.extratoResumoVal, { color: '#276749' }]}>
+                          {formatCurrency(extratoData.totais.limiteDisponivel)}
+                        </Text>
+                      </View>
+                    </View>
+
+                    {/* Formulário para Receber Pagamento de Conta / Amortização */}
+                    {extratoData.totais.saldoDevedorAtual > 0 && (
+                      <View style={styles.amortizacaoBox}>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                          <Text style={styles.amortizacaoTitle}>Receber Pagamento de Conta (Amortização)</Text>
+                          <TouchableOpacity
+                            style={styles.btnQuitarTotal}
+                            onPress={() => setValorPagamentoDebito(String(extratoData.totais.saldoDevedorAtual.toFixed(2)))}
+                          >
+                            <Text style={styles.btnQuitarTotalText}>Quitar Total</Text>
+                          </TouchableOpacity>
+                        </View>
+
+                        <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+                          <TextInput
+                            style={[styles.textInput, { flex: 1, marginBottom: 0 }]}
+                            placeholder={`Valor R$ (Máx: ${extratoData.totais.saldoDevedorAtual.toFixed(2)})`}
+                            placeholderTextColor="#A0AEC0"
+                            keyboardType="numeric"
+                            value={valorPagamentoDebito}
+                            onChangeText={setValorPagamentoDebito}
+                          />
+
+                          <View style={styles.formaDebitoRow}>
+                            {['dinheiro', 'pix', 'cartao_debito'].map(f => (
+                              <TouchableOpacity
+                                key={f}
+                                style={[styles.formaDebitoBtn, formaPagamentoDebito === f && styles.formaDebitoBtnActive]}
+                                onPress={() => setFormaPagamentoDebito(f)}
+                              >
+                                <Text style={[styles.formaDebitoBtnText, formaPagamentoDebito === f && styles.formaDebitoBtnTextActive]}>
+                                  {f === 'dinheiro' ? 'Dinheiro' : f === 'pix' ? 'PIX' : 'Débito'}
+                                </Text>
+                              </TouchableOpacity>
+                            ))}
+                          </View>
+                        </View>
+
+                        <TextInput
+                          style={[styles.textInput, { marginBottom: 8 }]}
+                          placeholder="Observações (Ex: Pago no balcão pelo próprio cliente)"
+                          placeholderTextColor="#A0AEC0"
+                          value={obsPagamentoDebito}
+                          onChangeText={setObsPagamentoDebito}
+                        />
+
+                        <TouchableOpacity
+                          style={styles.btnRegistrarPagamento}
+                          onPress={handleRegistrarPagamento}
+                          disabled={salvandoPagamento}
+                        >
+                          {salvandoPagamento ? (
+                            <ActivityIndicator size="small" color="#FFF" />
+                          ) : (
+                            <>
+                              <Ionicons name="checkmark-circle-outline" size={16} color="#FFF" style={{ marginRight: 6 }} />
+                              <Text style={styles.btnRegistrarPagamentoText}>Registrar Pagamento na Caderneta</Text>
+                            </>
+                          )}
+                        </TouchableOpacity>
+                      </View>
+                    )}
+
+                    {/* Linha do Tempo de Transações */}
+                    <Text style={styles.transacoesSectionTitle}>
+                      Histórico de Transações a Prazo ({extratoData.transacoes.length})
+                    </Text>
+
+                    {extratoData.transacoes.length === 0 ? (
+                      <View style={styles.emptyTransacoesBox}>
+                        <Ionicons name="receipt-outline" size={32} color="#CBD5E0" />
+                        <Text style={styles.emptyTransacoesText}>Nenhuma movimentação de fiado registrada para este cliente.</Text>
+                      </View>
+                    ) : (
+                      extratoData.transacoes.map((item, idx) => {
+                        const isDebito = item.tipoOperacao === 'DEBITO';
+                        const isEstorno = item.tipo === 'CANCELAMENTO_ESTORNO' || item.tipo === 'DEVOLUCAO_ESTORNO';
+                        const isPagamento = item.tipo === 'PAGAMENTO_DEBITO';
+
+                        return (
+                          <View key={idx} style={[styles.transacaoCard, isDebito ? styles.transacaoCardDebito : styles.transacaoCardCredito]}>
+                            <View style={{ flex: 1 }}>
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                                <View style={[
+                                  styles.badgeTipoOperacao,
+                                  isDebito ? styles.badgeDebito : isPagamento ? styles.badgePagamento : styles.badgeEstorno
+                                ]}>
+                                  <Text style={styles.badgeTipoOperacaoText}>
+                                    {isDebito ? 'COMPRA A PRAZO' : isPagamento ? 'PAGAMENTO' : 'ESTORNO'}
+                                  </Text>
+                                </View>
+                                <Text style={styles.transacaoRef}>{item.referencia}</Text>
+                              </View>
+                              <Text style={styles.transacaoDesc}>{item.descricao}</Text>
+                              <Text style={styles.transacaoData}>
+                                {new Date(item.data).toLocaleString('pt-BR')}
+                              </Text>
+                            </View>
+
+                            <View style={{ alignItems: 'flex-end', justifyContent: 'center' }}>
+                              <Text style={[
+                                styles.transacaoValor,
+                                isDebito ? { color: '#C53030' } : { color: '#276749' }
+                              ]}>
+                                {isDebito ? `+ ${formatCurrency(item.valor)}` : `- ${formatCurrency(item.valor)}`}
+                              </Text>
+                              <Text style={styles.transacaoSaldoApos}>
+                                Saldo: {formatCurrency(item.saldoAcumuladoApos)}
+                              </Text>
+                            </View>
+                          </View>
+                        );
+                      })
+                    )}
+                  </>
+                )}
+              </View>
+            ) : modoEdicao ? (
               /* FORMULÁRIO DE CADASTRO / EDIÇÃO */
               <View style={styles.formContainer}>
                 <Text style={styles.formSectionTitle}>
@@ -400,10 +646,18 @@ export default function ClientsModal({
 
                         <View style={styles.clientActionsCol}>
                           <TouchableOpacity
+                            style={styles.btnExtratoAcao}
+                            onPress={() => abrirExtratoCliente(cli)}
+                          >
+                            <Ionicons name="receipt-outline" size={14} color="#1E63EC" style={{ marginRight: 3 }} />
+                            <Text style={styles.btnExtratoAcaoText}>Extrato</Text>
+                          </TouchableOpacity>
+
+                          <TouchableOpacity
                             style={styles.iconActionBtn}
                             onPress={() => abrirEditarCliente(cli)}
                           >
-                            <Ionicons name="create-outline" size={20} color="#1E63EC" />
+                            <Ionicons name="create-outline" size={18} color="#1E63EC" />
                           </TouchableOpacity>
 
                           <TouchableOpacity
@@ -412,7 +666,7 @@ export default function ClientsModal({
                           >
                             <Ionicons
                               name={isBloqueado ? 'lock-open-outline' : 'lock-closed-outline'}
-                              size={16}
+                              size={15}
                               color={isBloqueado ? '#276749' : '#C53030'}
                             />
                           </TouchableOpacity>
@@ -731,6 +985,255 @@ const styles = StyleSheet.create({
   btnFecharText: {
     color: '#64748B',
     fontWeight: '600'
+  },
+  btnExtratoAcao: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EBF8FF',
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#BEE3F8'
+  },
+  btnExtratoAcaoText: {
+    fontSize: 11,
+    fontWeight: 'bold',
+    color: '#1E63EC'
+  },
+  extratoContainer: {
+    paddingVertical: 4
+  },
+  extratoHeaderNav: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12
+  },
+  btnVoltarExtrato: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6
+  },
+  btnVoltarExtratoText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#1E63EC'
+  },
+  extratoSectionTitle: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#1E293B'
+  },
+  centerLoading: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 30
+  },
+  loadingText: {
+    marginTop: 8,
+    fontSize: 12,
+    color: '#64748B'
+  },
+  extratoClienteCard: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 10
+  },
+  extratoClienteNome: {
+    fontSize: 15,
+    fontWeight: 'bold',
+    color: '#0F172A'
+  },
+  extratoClienteDoc: {
+    fontSize: 11,
+    color: '#64748B',
+    marginTop: 2
+  },
+  badgeAdimplente: {
+    backgroundColor: '#DEF7EC',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6
+  },
+  badgeAdimplenteText: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: '#03543F'
+  },
+  extratoResumoRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 12
+  },
+  extratoResumoCard: {
+    flex: 1,
+    padding: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    alignItems: 'center'
+  },
+  extratoResumoLabel: {
+    fontSize: 9,
+    fontWeight: 'bold',
+    color: '#64748B',
+    textTransform: 'uppercase'
+  },
+  extratoResumoVal: {
+    fontSize: 13,
+    fontWeight: 'bold',
+    marginTop: 3
+  },
+  amortizacaoBox: {
+    backgroundColor: '#F8FAFC',
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    marginBottom: 14
+  },
+  amortizacaoTitle: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#1E293B'
+  },
+  btnQuitarTotal: {
+    backgroundColor: '#E2E8F0',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4
+  },
+  btnQuitarTotalText: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: '#334155'
+  },
+  formaDebitoRow: {
+    flexDirection: 'row',
+    gap: 4
+  },
+  formaDebitoBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    borderRadius: 6,
+    backgroundColor: '#EDF2F7',
+    borderWidth: 1,
+    borderColor: '#CBD5E1'
+  },
+  formaDebitoBtnActive: {
+    backgroundColor: '#1E63EC',
+    borderColor: '#1E63EC'
+  },
+  formaDebitoBtnText: {
+    fontSize: 11,
+    color: '#475569',
+    fontWeight: '600'
+  },
+  formaDebitoBtnTextActive: {
+    color: '#FFF',
+    fontWeight: 'bold'
+  },
+  btnRegistrarPagamento: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#276749',
+    paddingVertical: 10,
+    borderRadius: 8
+  },
+  btnRegistrarPagamentoText: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: 'bold'
+  },
+  transacoesSectionTitle: {
+    fontSize: 13,
+    fontWeight: 'bold',
+    color: '#334155',
+    marginBottom: 8
+  },
+  emptyTransacoesBox: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 24,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E2E8F0'
+  },
+  emptyTransacoesText: {
+    fontSize: 12,
+    color: '#94A3B8',
+    marginTop: 6
+  },
+  transacaoCard: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    padding: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    marginBottom: 8
+  },
+  transacaoCardDebito: {
+    backgroundColor: '#FFFDFD',
+    borderColor: '#FED7D7'
+  },
+  transacaoCardCredito: {
+    backgroundColor: '#F8FFF9',
+    borderColor: '#C6F6D5'
+  },
+  badgeTipoOperacao: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4
+  },
+  badgeDebito: {
+    backgroundColor: '#FEB2B2'
+  },
+  badgePagamento: {
+    backgroundColor: '#BEE3F8'
+  },
+  badgeEstorno: {
+    backgroundColor: '#C6F6D5'
+  },
+  badgeTipoOperacaoText: {
+    fontSize: 9,
+    fontWeight: 'bold',
+    color: '#1A202C'
+  },
+  transacaoRef: {
+    fontSize: 11,
+    fontWeight: 'bold',
+    color: '#475569'
+  },
+  transacaoDesc: {
+    fontSize: 11,
+    color: '#334155',
+    marginTop: 1
+  },
+  transacaoData: {
+    fontSize: 10,
+    color: '#94A3B8',
+    marginTop: 2
+  },
+  transacaoValor: {
+    fontSize: 13,
+    fontWeight: 'bold'
+  },
+  transacaoSaldoApos: {
+    fontSize: 10,
+    color: '#64748B',
+    marginTop: 2
   }
 });
 

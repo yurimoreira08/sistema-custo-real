@@ -278,8 +278,25 @@ function setupTestDb() {
       saldo_apos REAL NOT NULL,
       origem_referencia TEXT,
       justificativa TEXT,
+      comprovante_hash TEXT,
+      assinatura_digital TEXT,
       data_movimentacao TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (turno_caixa_id) REFERENCES TurnoCaixa(id),
+      FOREIGN KEY (operador_id) REFERENCES Usuario(id)
+    );
+
+    CREATE TABLE PagamentoDebitoCliente (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      gerente_id INTEGER NOT NULL,
+      cliente_id INTEGER NOT NULL,
+      operador_id INTEGER NOT NULL,
+      valor REAL NOT NULL,
+      forma_pagamento TEXT NOT NULL DEFAULT 'dinheiro',
+      observacoes TEXT,
+      saldo_anterior REAL NOT NULL,
+      saldo_resultante REAL NOT NULL,
+      data_pagamento TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (cliente_id) REFERENCES Cliente(id),
       FOREIGN KEY (operador_id) REFERENCES Usuario(id)
     );
 
@@ -298,6 +315,31 @@ function setupTestDb() {
       status TEXT NOT NULL DEFAULT 'ativo' CHECK(status IN ('ativo', 'esgotado', 'vencido')),
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (produto_id) REFERENCES Produto(id)
+    );
+
+    CREATE VIEW IF NOT EXISTS vw_triagem_validade_lotes AS
+    SELECT 
+      le.id,
+      le.gerente_id,
+      le.produto_id,
+      p.nome AS produto_nome,
+      p.categoria AS produto_categoria,
+      le.numero_lote,
+      le.data_entrada,
+      le.data_validade,
+      le.quantidade_saldo,
+      le.custo_unitario,
+      ROUND(le.quantidade_saldo * le.custo_unitario, 2) AS capital_parado,
+      CASE 
+        WHEN DATE(le.data_validade) < DATE('now') THEN 'VENCIDO'
+        WHEN DATE(le.data_validade) <= DATE('now', '+7 days') THEN 'RISCO_CRITICO'
+        WHEN DATE(le.data_validade) <= DATE('now', '+15 days') THEN 'RISCO_MEDIO'
+        WHEN DATE(le.data_validade) <= DATE('now', '+30 days') THEN 'ALERTA'
+        ELSE 'SEGURO'
+      END AS faixa_risco
+    FROM LoteEstoque le
+    JOIN Produto p ON p.id = le.produto_id
+    WHERE le.quantidade_saldo > 0 AND le.status = 'ativo' AND le.data_validade IS NOT NULL;
     );
   `);
 
@@ -2066,4 +2108,515 @@ test('S06 — Item 3: Lotes & Controle de Validade (Prazos de Validade Vinculado
   registrarLoteEntrada(1, 'LOTE-VENCIDO', '2026-01-01', '2026-05-01', 5.0, 3.0);
   const sugComVencido = sugerirSaidaPEPS(1, 10.0, '2026-11-04');
   assert.ok(sugComVencido.alertas.some(a => a.includes('VENCIDO')));
+});
+
+// ============================================================================
+// SUÍTE DE TESTES AUTOMATIZADOS: SEMANA 07 (S07)
+// Módulos: Financeiro/Caixa, Vendas/Fiado e Estoque/Validade
+// ============================================================================
+
+test('S07 — Item 1: Módulo Financeiro & Caixa (Sangrias, Suprimentos com Comprovante Assinado Digitalmente SHA-256 e Integração com Estornos na Gaveta Atual)', () => {
+  const db = setupTestDb();
+  db.prepare(`INSERT INTO Usuario (id, nome, email, senha, cargo) VALUES (1, 'Gerente Geral', 'gerente@mercado.com', '${sha256('1234')}', 'gerente');`).run();
+  db.prepare(`INSERT INTO Usuario (id, nome, email, senha, cargo, gerente_id) VALUES (2, 'Operador Caixa', 'operador@mercado.com', '${sha256('1234')}', 'balconista', 1);`).run();
+  db.prepare(`INSERT INTO Produto (id, gerente_id, nome, preco_custo, preco_venda, estoque_atual) VALUES (1, 1, 'Arroz 5kg', 15.0, 25.0, 50.0);`).run();
+
+  // 1. Funções de Movimentação com Comprovante Assinado Digitalmente
+  function gerarAssinatura(mov) {
+    const payload = [
+      mov.turno_caixa_id,
+      mov.gerente_id,
+      mov.operador_id,
+      mov.tipo_operacao,
+      Number(mov.valor || 0).toFixed(2),
+      Number(mov.saldo_apos || 0).toFixed(2),
+      mov.origem_referencia || '',
+      mov.justificativa || '',
+      mov.data_movimentacao || ''
+    ].join('|');
+    const hash = sha256(payload);
+    const cod = `LC-${mov.tipo_operacao.substring(0, 3)}-${hash.substring(0, 12).toUpperCase()}`;
+    return { hash, cod, payload };
+  }
+
+  function validarAssinatura(mov) {
+    if (!mov || !mov.assinatura_digital) return false;
+    const calc = gerarAssinatura(mov);
+    return calc.hash === mov.assinatura_digital;
+  }
+
+  function abrirTurno(operadorId, gerenteId, fundoTroco) {
+    const res = db.prepare(`
+      INSERT INTO TurnoCaixa (gerente_id, operador_id, status, fundo_troco_inicial, saldo_esperado_dinheiro)
+      VALUES (?, ?, 'aberto', ?, ?);
+    `).run(gerenteId, operadorId, fundoTroco, fundoTroco);
+    const turnoId = Number(res.lastInsertRowid);
+
+    const mov = {
+      turno_caixa_id: turnoId,
+      gerente_id: gerenteId,
+      operador_id: operadorId,
+      tipo_operacao: 'ABERTURA',
+      valor: fundoTroco,
+      saldo_apos: fundoTroco,
+      origem_referencia: `ABERTURA-${turnoId}`,
+      justificativa: 'Fundo de troco inicial',
+      data_movimentacao: '2026-11-10 08:00:00'
+    };
+    const { hash, cod } = gerarAssinatura(mov);
+    db.prepare(`
+      INSERT INTO MovimentacaoCaixa (turno_caixa_id, gerente_id, operador_id, tipo_operacao, forma_pagamento, valor, saldo_apos, origem_referencia, justificativa, comprovante_hash, assinatura_digital, data_movimentacao)
+      VALUES (?, ?, ?, 'ABERTURA', 'dinheiro', ?, ?, ?, ?, ?, ?, ?);
+    `).run(turnoId, gerenteId, operadorId, fundoTroco, fundoTroco, mov.origem_referencia, mov.justificativa, cod, hash, mov.data_movimentacao);
+
+    return db.prepare('SELECT * FROM TurnoCaixa WHERE id = ?').get(turnoId);
+  }
+
+  function lancarMovimentacao(turnoId, operadorId, gerenteId, tipo, valor, justificativa) {
+    const t = db.prepare("SELECT * FROM TurnoCaixa WHERE id = ? AND status = 'aberto'").get(turnoId);
+    if (!t) throw new Error('Turno deve estar aberto para movimentações.');
+
+    let novoSaldo = t.saldo_esperado_dinheiro;
+    if (tipo === 'SANGRIA') {
+      if (valor > t.saldo_esperado_dinheiro) {
+        throw new Error(`Saldo insuficiente na gaveta para sangria. Disponível: ${t.saldo_esperado_dinheiro}, Solicitado: ${valor}`);
+      }
+      novoSaldo = subtractMoney(t.saldo_esperado_dinheiro, valor);
+      db.prepare('UPDATE TurnoCaixa SET total_sangrias = total_sangrias + ?, saldo_esperado_dinheiro = ? WHERE id = ?').run(valor, novoSaldo, turnoId);
+    } else if (tipo === 'SUPRIMENTO') {
+      novoSaldo = sumMoney(t.saldo_esperado_dinheiro, valor);
+      db.prepare('UPDATE TurnoCaixa SET total_suprimentos = total_suprimentos + ?, saldo_esperado_dinheiro = ? WHERE id = ?').run(valor, novoSaldo, turnoId);
+    }
+
+    const mov = {
+      turno_caixa_id: turnoId,
+      gerente_id: gerenteId,
+      operador_id: operadorId,
+      tipo_operacao: tipo,
+      valor,
+      saldo_apos: novoSaldo,
+      origem_referencia: `${tipo}-${turnoId}`,
+      justificativa,
+      data_movimentacao: '2026-11-10 10:30:00'
+    };
+
+    const { hash, cod } = gerarAssinatura(mov);
+
+    const res = db.prepare(`
+      INSERT INTO MovimentacaoCaixa (
+        turno_caixa_id, gerente_id, operador_id, tipo_operacao, forma_pagamento, valor, saldo_apos,
+        origem_referencia, justificativa, comprovante_hash, assinatura_digital, data_movimentacao
+      ) VALUES (?, ?, ?, ?, 'dinheiro', ?, ?, ?, ?, ?, ?, ?);
+    `).run(turnoId, gerenteId, operadorId, tipo, valor, novoSaldo, mov.origem_referencia, justificativa, cod, hash, mov.data_movimentacao);
+
+    const movRegistrada = db.prepare('SELECT * FROM MovimentacaoCaixa WHERE id = ?').get(res.lastInsertRowid);
+    return {
+      turno: db.prepare('SELECT * FROM TurnoCaixa WHERE id = ?').get(turnoId),
+      movimentacao: movRegistrada,
+      comprovante: {
+        id: movRegistrada.id,
+        tipo,
+        valor,
+        saldoAnterior: t.saldo_esperado_dinheiro,
+        saldoApos: novoSaldo,
+        codigoAutenticacao: cod,
+        assinaturaDigital: hash,
+        valido: validarAssinatura(movRegistrada)
+      }
+    };
+  }
+
+  // Abre turno com R$ 100,00 de troco
+  const turno1 = abrirTurno(2, 1, 100.0);
+  assert.equal(turno1.saldo_esperado_dinheiro, 100.0);
+
+  // Cenário 1: Suprimento (Aporte de Capital/Troco) de R$ 50,00
+  const supRes = lancarMovimentacao(turno1.id, 2, 1, 'SUPRIMENTO', 50.0, 'Reforço de moedas para troco');
+  assert.equal(supRes.turno.saldo_esperado_dinheiro, 150.0);
+  assert.equal(supRes.turno.total_suprimentos, 50.0);
+  assert.equal(supRes.comprovante.valido, true);
+  assert.match(supRes.comprovante.codigoAutenticacao, /^LC-SUP-[A-F0-9]{12}$/);
+  assert.equal(validarAssinatura(supRes.movimentacao), true);
+
+  // Cenário 2: Sangria (Retirada de Segurança) de R$ 70,00
+  const sangRes = lancarMovimentacao(turno1.id, 2, 1, 'SANGRIA', 70.0, 'Sangria periódica para o cofre central');
+  assert.equal(sangRes.turno.saldo_esperado_dinheiro, 80.0);
+  assert.equal(sangRes.turno.total_sangrias, 70.0);
+  assert.equal(sangRes.comprovante.valido, true);
+  assert.match(sangRes.comprovante.codigoAutenticacao, /^LC-SAN-[A-F0-9]{12}$/);
+
+  // Cenário 3: Sangria que excede saldo da gaveta (R$ 100 > R$ 80) é estritamente bloqueada
+  assert.throws(() => {
+    lancarMovimentacao(turno1.id, 2, 1, 'SANGRIA', 100.0, 'Tentativa de retirada acima do saldo');
+  }, /Saldo insuficiente na gaveta/);
+
+  // Cenário 4: Registro de Venda de R$ 50,00 em dinheiro na gaveta
+  db.prepare(`
+    INSERT INTO Venda (id, gerente_id, usuario_id, subtotal, total, status, canal_venda, turno_caixa_id)
+    VALUES (201, 1, 2, 50.0, 50.0, 'concluida', 'balcao', ?);
+  `).run(turno1.id);
+  db.prepare(`
+    INSERT INTO PagamentoVenda (venda_id, gerente_id, forma_pagamento, valor_pago, status)
+    VALUES (201, 1, 'dinheiro', 50.0, 'confirmado');
+  `).run();
+  // Atualiza saldo gaveta: 80 + 50 = 130
+  db.prepare('UPDATE TurnoCaixa SET total_vendas_dinheiro = total_vendas_dinheiro + 50.0, saldo_esperado_dinheiro = saldo_esperado_dinheiro + 50.0 WHERE id = ?').run(turno1.id);
+  const tAposVenda = db.prepare('SELECT * FROM TurnoCaixa WHERE id = ?').get(turno1.id);
+  assert.equal(tAposVenda.saldo_esperado_dinheiro, 130.0);
+
+  // Cenário 5: Integração com Estorno/Cancelamento de Venda
+  // Quando a venda 201 for cancelada, os R$ 50,00 em dinheiro DEVEM ser estornados diretamente da gaveta atual
+  function estornarVenda(vendaId, gerenteId, operadorId, motivo) {
+    const v = db.prepare('SELECT * FROM Venda WHERE id = ?').get(vendaId);
+    if (!v) throw new Error('Venda não encontrada');
+    
+    // Verifica pagamento em dinheiro
+    const pagDinheiro = db.prepare("SELECT SUM(valor_pago) as total FROM PagamentoVenda WHERE venda_id = ? AND forma_pagamento = 'dinheiro' AND status = 'confirmado'").get(vendaId);
+    const valDinheiro = pagDinheiro.total || 0;
+
+    // Localiza turno de caixa ativo (se o turno original estiver fechado, usa o turno ativo atual)
+    let turnoAlvo = db.prepare("SELECT * FROM TurnoCaixa WHERE id = ? AND status = 'aberto'").get(v.turno_caixa_id);
+    if (!turnoAlvo) {
+      turnoAlvo = db.prepare("SELECT * FROM TurnoCaixa WHERE gerente_id = ? AND status = 'aberto' ORDER BY id DESC LIMIT 1").get(gerenteId);
+    }
+    if (!turnoAlvo) throw new Error('Nenhum turno de caixa aberto encontrado para abater estorno em dinheiro.');
+
+    // Abate da gaveta de caixa atual
+    const novoSaldo = subtractMoney(turnoAlvo.saldo_esperado_dinheiro, valDinheiro);
+    const novoTotalVendas = Math.max(0, subtractMoney(turnoAlvo.total_vendas_dinheiro, valDinheiro));
+
+    db.prepare('UPDATE TurnoCaixa SET total_vendas_dinheiro = ?, saldo_esperado_dinheiro = ? WHERE id = ?').run(novoTotalVendas, novoSaldo, turnoAlvo.id);
+    db.prepare("UPDATE Venda SET status = 'cancelada' WHERE id = ?").run(vendaId);
+    db.prepare("UPDATE PagamentoVenda SET status = 'estornado' WHERE venda_id = ?").run(vendaId);
+
+    const mov = {
+      turno_caixa_id: turnoAlvo.id,
+      gerente_id: gerenteId,
+      operador_id: operadorId,
+      tipo_operacao: 'ESTORNO',
+      valor: valDinheiro,
+      saldo_apos: novoSaldo,
+      origem_referencia: `CANCEL-VENDA-${vendaId}`,
+      justificativa: motivo,
+      data_movimentacao: '2026-11-10 11:00:00'
+    };
+    const { hash, cod } = gerarAssinatura(mov);
+    db.prepare(`
+      INSERT INTO MovimentacaoCaixa (turno_caixa_id, gerente_id, operador_id, tipo_operacao, forma_pagamento, valor, saldo_apos, origem_referencia, justificativa, comprovante_hash, assinatura_digital, data_movimentacao)
+      VALUES (?, ?, ?, 'ESTORNO', 'dinheiro', ?, ?, ?, ?, ?, ?, ?);
+    `).run(turnoAlvo.id, gerenteId, operadorId, valDinheiro, novoSaldo, mov.origem_referencia, motivo, cod, hash, mov.data_movimentacao);
+
+    return db.prepare('SELECT * FROM TurnoCaixa WHERE id = ?').get(turnoAlvo.id);
+  }
+
+  const tAposEstorno = estornarVenda(201, 1, 2, 'Cliente desistiu da compra');
+  // Saldo anterior 130 - 50 estornado = 80
+  assert.equal(tAposEstorno.saldo_esperado_dinheiro, 80.0);
+  assert.equal(tAposEstorno.total_vendas_dinheiro, 0.0);
+
+  // Cenário 6: Estorno de venda de turno anterior fechado reflete no turno ativo atual
+  // Fecha o turno 1
+  db.prepare("UPDATE TurnoCaixa SET status = 'fechado' WHERE id = ?").run(turno1.id);
+  // Abre o turno 2 com fundo de troco R$ 200,00
+  const turno2 = abrirTurno(2, 1, 200.0);
+  assert.equal(turno2.saldo_esperado_dinheiro, 200.0);
+
+  // Cria uma venda 202 que foi realizada no turno 1 (fechado) com R$ 30,00 em dinheiro
+  db.prepare(`
+    INSERT INTO Venda (id, gerente_id, usuario_id, subtotal, total, status, canal_venda, turno_caixa_id)
+    VALUES (202, 1, 2, 30.0, 30.0, 'concluida', 'balcao', ?);
+  `).run(turno1.id);
+  db.prepare(`
+    INSERT INTO PagamentoVenda (venda_id, gerente_id, forma_pagamento, valor_pago, status)
+    VALUES (202, 1, 'dinheiro', 30.0, 'confirmado');
+  `).run();
+
+  // Agora cancela a venda 202 hoje (turno 1 já está fechado). O estorno deve deduzir do Turno 2 ATIVO!
+  const t2AposEstorno = estornarVenda(202, 1, 2, 'Devolução no dia seguinte com caixa anterior já fechado');
+  assert.equal(t2AposEstorno.id, turno2.id, 'Dedução deve ocorrer no turno aberto atual');
+  assert.equal(t2AposEstorno.saldo_esperado_dinheiro, 170.0, '200 - 30 estornado = 170');
+});
+
+test('S07 — Item 2: Módulo de Vendas & Fiado (Fiado no Checkout, Abate de Limite em Tempo Real e Extrato Consolidado da Caderneta)', () => {
+  const db = setupTestDb();
+  db.prepare(`INSERT INTO Usuario (id, nome, email, senha, cargo) VALUES (1, 'Gerente', 'gerente@mercado.com', '${sha256('1234')}', 'gerente');`).run();
+  db.prepare(`INSERT INTO Usuario (id, nome, email, senha, cargo, gerente_id) VALUES (2, 'Operador', 'balcao@mercado.com', '${sha256('1234')}', 'balconista', 1);`).run();
+
+  // 1. Cadastra Cliente com Teto de Crédito de R$ 200,00
+  db.prepare(`
+    INSERT INTO Cliente (id, gerente_id, nome, cpf_cnpj, telefone, limite_fiado, saldo_devedor, bloqueado_inadimplente)
+    VALUES (1, 1, 'Severino do Ramo', '11144477735', '(86) 99988-7766', 200.0, 0.0, 0);
+  `).run();
+
+  // Função de validação e débito em tempo real
+  function realizarVendaFiado(clienteId, valorVenda, vendaId) {
+    const cli = db.prepare('SELECT * FROM Cliente WHERE id = ?').get(clienteId);
+    if (!cli) throw new Error('Cliente não encontrado.');
+    if (cli.bloqueado_inadimplente === 1) {
+      throw new Error(`Venda bloqueada: Cliente "${cli.nome}" com bloqueio preventivo de crédito.`);
+    }
+
+    const novoSaldo = round2(cli.saldo_devedor + valorVenda);
+    if (cli.limite_fiado > 0 && novoSaldo > (cli.limite_fiado + 0.001)) {
+      const disponivel = Math.max(0, cli.limite_fiado - cli.saldo_devedor);
+      throw new Error(`Teto de crédito excedido para "${cli.nome}". Limite: ${cli.limite_fiado}, Débito atual: ${cli.saldo_devedor}, Disponível: ${disponivel}, Tentativa: ${valorVenda}`);
+    }
+
+    // Registra Venda
+    db.prepare(`
+      INSERT INTO Venda (id, gerente_id, usuario_id, cliente_id, subtotal, total, status, canal_venda, created_at)
+      VALUES (?, 1, 2, ?, ?, ?, 'concluida', 'balcao', CURRENT_TIMESTAMP);
+    `).run(vendaId, clienteId, valorVenda, valorVenda);
+
+    // Registra Pagamento Fiado
+    db.prepare(`
+      INSERT INTO PagamentoVenda (venda_id, gerente_id, forma_pagamento, valor_pago, cliente_id, status)
+      VALUES (?, 1, 'fiado', ?, ?, 'confirmado');
+    `).run(vendaId, valorVenda, clienteId);
+
+    // Abate crédito (aumenta saldo devedor) em tempo real
+    db.prepare('UPDATE Cliente SET saldo_devedor = ? WHERE id = ?').run(novoSaldo, clienteId);
+
+    return db.prepare('SELECT * FROM Cliente WHERE id = ?').get(clienteId);
+  }
+
+  // 1ª Compra a Prazo: R$ 80,00 -> saldo_devedor = 80.0, disponível = 120.0
+  const cliAposVenda1 = realizarVendaFiado(1, 80.0, 301);
+  assert.equal(cliAposVenda1.saldo_devedor, 80.0);
+
+  // 2ª Compra a Prazo: R$ 70,00 -> saldo_devedor = 150.0, disponível = 50.0
+  const cliAposVenda2 = realizarVendaFiado(1, 70.0, 302);
+  assert.equal(cliAposVenda2.saldo_devedor, 150.0);
+
+  // 3ª Compra Tentativa: R$ 60,00 -> totalizaria R$ 210,00 > R$ 200,00 (BLOQUEIO EM TEMPO REAL NO CHECKOUT!)
+  assert.throws(() => {
+    realizarVendaFiado(1, 60.0, 303);
+  }, /Teto de crédito excedido/);
+
+  // Saldo permaneceu em R$ 150,00
+  const cliPosTentativa = db.prepare('SELECT saldo_devedor FROM Cliente WHERE id = 1').get();
+  assert.equal(cliPosTentativa.saldo_devedor, 150.0);
+
+  // Amortização de fiado: Cliente paga R$ 50,00 em dinheiro na caderneta
+  function registrarPagamentoConta(clienteId, valorPago, forma) {
+    const cli = db.prepare('SELECT * FROM Cliente WHERE id = ?').get(clienteId);
+    if (!cli) throw new Error('Cliente não encontrado');
+    const saldoAnt = cli.saldo_devedor;
+    const vEfetivo = Math.min(valorPago, saldoAnt);
+    const saldoRes = subtractMoney(saldoAnt, vEfetivo);
+
+    db.prepare(`
+      INSERT INTO PagamentoDebitoCliente (gerente_id, cliente_id, operador_id, valor, forma_pagamento, observacoes, saldo_anterior, saldo_resultante)
+      VALUES (1, ?, 2, ?, ?, 'Amortização no balcão', ?, ?);
+    `).run(clienteId, vEfetivo, forma, saldoAnt, saldoRes);
+
+    db.prepare('UPDATE Cliente SET saldo_devedor = ? WHERE id = ?').run(saldoRes, clienteId);
+    return db.prepare('SELECT * FROM Cliente WHERE id = ?').get(clienteId);
+  }
+
+  const cliAposPag = registrarPagamentoConta(1, 50.0, 'dinheiro');
+  // Saldo devedor cai de 150 para 100
+  assert.equal(cliAposPag.saldo_devedor, 100.0);
+
+  // Agora cliente tem R$ 100 de crédito disponível e pode fazer a compra de R$ 60 que antes fora bloqueada!
+  const cliCompraLiberada = realizarVendaFiado(1, 60.0, 304);
+  assert.equal(cliCompraLiberada.saldo_devedor, 160.0);
+
+  // Consulta do Extrato Consolidado da Caderneta
+  function consultarExtrato(clienteId) {
+    const cli = db.prepare('SELECT * FROM Cliente WHERE id = ?').get(clienteId);
+    const compras = db.prepare(`
+      SELECT v.id as venda_id, v.created_at, pv.valor_pago, v.status
+      FROM PagamentoVenda pv
+      JOIN Venda v ON v.id = pv.venda_id
+      WHERE pv.forma_pagamento = 'fiado' AND v.cliente_id = ?
+      ORDER BY v.id ASC;
+    `).all(clienteId);
+
+    const pagamentos = db.prepare(`
+      SELECT * FROM PagamentoDebitoCliente WHERE cliente_id = ? ORDER BY id ASC;
+    `).all(clienteId);
+
+    let saldo = 0;
+    const eventos = [];
+    for (const c of compras) {
+      saldo = sumMoney(saldo, c.valor_pago);
+      eventos.push({ tipo: 'COMPRA_FIADO', valor: c.valor_pago, saldoApos: saldo, ref: `Venda #${c.venda_id}` });
+    }
+    for (const p of pagamentos) {
+      saldo = subtractMoney(saldo, p.valor);
+      eventos.push({ tipo: 'PAGAMENTO_DEBITO', valor: p.valor, saldoApos: saldo, ref: `Recibo #${p.id}` });
+    }
+
+    return {
+      cliente: cli,
+      totalComprasFiado: compras.reduce((acc, c) => acc + c.valor_pago, 0),
+      totalPagamentos: pagamentos.reduce((acc, p) => acc + p.valor, 0),
+      saldoDevedorAtual: cli.saldo_devedor,
+      limiteDisponivel: Math.max(0, cli.limite_fiado - cli.saldo_devedor),
+      eventos
+    };
+  }
+
+  const extrato = consultarExtrato(1);
+  // Total de compras no fiado: 80 + 70 + 60 = 210
+  assert.equal(extrato.totalComprasFiado, 210.0);
+  // Total pago: 50
+  assert.equal(extrato.totalPagamentos, 50.0);
+  // Saldo em aberto acumulado: 210 - 50 = 160
+  assert.equal(extrato.saldoDevedorAtual, 160.0);
+  // Limite restante disponível: 200 - 160 = 40
+  assert.equal(extrato.limiteDisponivel, 40.0);
+});
+
+test('S07 — Item 3: Módulo de Estoque (Triagem de Vencimento Crítico nas 4 Faixas de Risco e Apuração do Capital Parado sob Risco)', () => {
+  const db = setupTestDb();
+  db.prepare(`INSERT INTO Usuario (id, nome, email, senha, cargo) VALUES (1, 'Gerente', 'gerente@mercado.com', 'hash', 'gerente');`).run();
+  db.prepare(`INSERT INTO Fornecedor (id, gerente_id, razao_social) VALUES (1, 1, 'Distribuidora Alimentos');`).run();
+
+  // Produtos
+  db.prepare(`INSERT INTO Produto (id, gerente_id, nome, categoria, preco_custo, preco_venda, estoque_atual) VALUES (1, 1, 'Queijo Prato 500g', 'Frios', 18.0, 28.0, 40.0);`).run();
+  db.prepare(`INSERT INTO Produto (id, gerente_id, nome, categoria, preco_custo, preco_venda, estoque_atual) VALUES (2, 1, 'Iogurte Morango 1L', 'Laticínios', 6.0, 11.0, 50.0);`).run();
+  db.prepare(`INSERT INTO Produto (id, gerente_id, nome, categoria, preco_custo, preco_venda, estoque_atual) VALUES (3, 1, 'Pão de Forma', 'Padaria', 4.5, 7.5, 20.0);`).run();
+  db.prepare(`INSERT INTO Produto (id, gerente_id, nome, categoria, preco_custo, preco_venda, estoque_atual) VALUES (4, 1, 'Biscoito Recheado', 'Mercearia', 2.0, 3.5, 100.0);`).run();
+
+  // Data de referência de teste: '2026-11-10'
+  const dataRef = '2026-11-10';
+
+  // Lote 1: VENCIDO (validade: 2026-11-05 < 2026-11-10) -> 10 un a R$ 18.00 = R$ 180,00
+  db.prepare(`
+    INSERT INTO LoteEstoque (gerente_id, produto_id, numero_lote, data_validade, quantidade_inicial, quantidade_saldo, custo_unitario, status)
+    VALUES (1, 1, 'LOTE-VENC-01', '2026-11-05', 10, 10, 18.0, 'ativo');
+  `).run();
+
+  // Lote 2: RISCO CRÍTICO (validade: 2026-11-14 -> 4 dias <= 7) -> 20 un a R$ 6.00 = R$ 120,00
+  db.prepare(`
+    INSERT INTO LoteEstoque (gerente_id, produto_id, numero_lote, data_validade, quantidade_inicial, quantidade_saldo, custo_unitario, status)
+    VALUES (1, 2, 'LOTE-CRIT-01', '2026-11-14', 20, 20, 6.0, 'ativo');
+  `).run();
+
+  // Lote 3: RISCO MÉDIO (validade: 2026-11-22 -> 12 dias <= 15) -> 15 un a R$ 4.50 = R$ 67,50
+  db.prepare(`
+    INSERT INTO LoteEstoque (gerente_id, produto_id, numero_lote, data_validade, quantidade_inicial, quantidade_saldo, custo_unitario, status)
+    VALUES (1, 3, 'LOTE-MED-01', '2026-11-22', 15, 15, 4.50, 'ativo');
+  `).run();
+
+  // Lote 4: ALERTA (validade: 2026-12-05 -> 25 dias <= 30) -> 30 un a R$ 6.00 = R$ 180,00
+  db.prepare(`
+    INSERT INTO LoteEstoque (gerente_id, produto_id, numero_lote, data_validade, quantidade_inicial, quantidade_saldo, custo_unitario, status)
+    VALUES (1, 2, 'LOTE-ALE-01', '2026-12-05', 30, 30, 6.0, 'ativo');
+  `).run();
+
+  // Lote 5: SEGURO / NORMAL (validade: 2027-04-10 -> > 30 dias) -> 100 un a R$ 2.00 = R$ 200,00
+  db.prepare(`
+    INSERT INTO LoteEstoque (gerente_id, produto_id, numero_lote, data_validade, quantidade_inicial, quantidade_saldo, custo_unitario, status)
+    VALUES (1, 4, 'LOTE-SEG-01', '2027-04-10', 100, 100, 2.0, 'ativo');
+  `).run();
+
+  // Lote 6: ESGOTADO (saldo = 0) -> NÃO DEVE ENTRAR NO CAPITAL PARADO SOB RISCO
+  db.prepare(`
+    INSERT INTO LoteEstoque (gerente_id, produto_id, numero_lote, data_validade, quantidade_inicial, quantidade_saldo, custo_unitario, status)
+    VALUES (1, 1, 'LOTE-ZERADO', '2026-11-12', 10, 0, 18.0, 'esgotado');
+  `).run();
+
+  // Função do Motor de Triagem de Validade e Cálculo Dinâmico de Capital Parado
+  function processarTriagem(hoje) {
+    const lotes = db.prepare(`
+      SELECT le.*, p.nome as produto_nome, p.categoria as produto_categoria
+      FROM LoteEstoque le
+      JOIN Produto p ON p.id = le.produto_id
+      WHERE le.quantidade_saldo > 0 AND le.status = 'ativo' AND le.data_validade IS NOT NULL
+      ORDER BY le.data_validade ASC;
+    `).all();
+
+    const hojeTime = new Date(hoje + 'T00:00:00Z').getTime();
+
+    const faixas = {
+      vencidos: { lotes: [], capitalParado: 0.0, totalItens: 0 },
+      critico: { lotes: [], capitalParado: 0.0, totalItens: 0 },
+      medio: { lotes: [], capitalParado: 0.0, totalItens: 0 },
+      alerta: { lotes: [], capitalParado: 0.0, totalItens: 0 },
+      seguro: { lotes: [], capitalParado: 0.0, totalItens: 0 }
+    };
+
+    for (const l of lotes) {
+      const valTime = new Date(l.data_validade + 'T00:00:00Z').getTime();
+      const dias = Math.round((valTime - hojeTime) / (1000 * 60 * 60 * 24));
+      const capital = round2(l.quantidade_saldo * l.custo_unitario);
+
+      if (dias < 0) {
+        faixas.vencidos.lotes.push(l);
+        faixas.vencidos.capitalParado = round2(faixas.vencidos.capitalParado + capital);
+        faixas.vencidos.totalItens += l.quantidade_saldo;
+      } else if (dias <= 7) {
+        faixas.critico.lotes.push(l);
+        faixas.critico.capitalParado = round2(faixas.critico.capitalParado + capital);
+        faixas.critico.totalItens += l.quantidade_saldo;
+      } else if (dias <= 15) {
+        faixas.medio.lotes.push(l);
+        faixas.medio.capitalParado = round2(faixas.medio.capitalParado + capital);
+        faixas.medio.totalItens += l.quantidade_saldo;
+      } else if (dias <= 30) {
+        faixas.alerta.lotes.push(l);
+        faixas.alerta.capitalParado = round2(faixas.alerta.capitalParado + capital);
+        faixas.alerta.totalItens += l.quantidade_saldo;
+      } else {
+        faixas.seguro.lotes.push(l);
+        faixas.seguro.capitalParado = round2(faixas.seguro.capitalParado + capital);
+        faixas.seguro.totalItens += l.quantidade_saldo;
+      }
+    }
+
+    const capitalTotalEmRisco = round2(
+      faixas.vencidos.capitalParado +
+      faixas.critico.capitalParado +
+      faixas.medio.capitalParado +
+      faixas.alerta.capitalParado
+    );
+
+    return { faixas, capitalTotalEmRisco };
+  }
+
+  const triagem = processarTriagem(dataRef);
+
+  // 1. Faixa Vencidos (< hoje): 1 lote (10 un Queijo * R$ 18,00 = R$ 180,00)
+  assert.equal(triagem.faixas.vencidos.lotes.length, 1);
+  assert.equal(triagem.faixas.vencidos.lotes[0].numero_lote, 'LOTE-VENC-01');
+  assert.equal(triagem.faixas.vencidos.capitalParado, 180.00);
+  assert.equal(triagem.faixas.vencidos.totalItens, 10);
+
+  // 2. Faixa Risco Crítico (até 7 dias): 1 lote (20 un Iogurte * R$ 6,00 = R$ 120,00)
+  assert.equal(triagem.faixas.critico.lotes.length, 1);
+  assert.equal(triagem.faixas.critico.lotes[0].numero_lote, 'LOTE-CRIT-01');
+  assert.equal(triagem.faixas.critico.capitalParado, 120.00);
+  assert.equal(triagem.faixas.critico.totalItens, 20);
+
+  // 3. Faixa Risco Médio (8 a 15 dias): 1 lote (15 un Pão * R$ 4,50 = R$ 67,50)
+  assert.equal(triagem.faixas.medio.lotes.length, 1);
+  assert.equal(triagem.faixas.medio.lotes[0].numero_lote, 'LOTE-MED-01');
+  assert.equal(triagem.faixas.medio.capitalParado, 67.50);
+  assert.equal(triagem.faixas.medio.totalItens, 15);
+
+  // 4. Faixa Alerta (16 a 30 dias): 1 lote (30 un Iogurte * R$ 6,00 = R$ 180,00)
+  assert.equal(triagem.faixas.alerta.lotes.length, 1);
+  assert.equal(triagem.faixas.alerta.lotes[0].numero_lote, 'LOTE-ALE-01');
+  assert.equal(triagem.faixas.alerta.capitalParado, 180.00);
+  assert.equal(triagem.faixas.alerta.totalItens, 30);
+
+  // 5. Total de Capital Parado sob Risco:
+  // Vencidos (180.00) + Crítico (120.00) + Médio (67.50) + Alerta (180.00) = R$ 547,50
+  assert.equal(triagem.capitalTotalEmRisco, 547.50);
+
+  // 6. Faixa Segura (> 30 dias): R$ 200,00 que NÃO é contabilizado no risco
+  assert.equal(triagem.faixas.seguro.capitalParado, 200.00);
+
+  // 7. Validação da VIEW SQL (vw_triagem_validade_lotes)
+  const viewRows = db.prepare('SELECT * FROM vw_triagem_validade_lotes').all();
+  // 5 lotes ativos com saldo > 0 e validade
+  assert.equal(viewRows.length, 5);
+  // Garante que o lote com saldo zero não está presente na view
+  assert.equal(viewRows.some(r => r.numero_lote === 'LOTE-ZERADO'), false);
+  // Valida que o capital parado na view é exatamente calculado
+  const queijoView = viewRows.find(r => r.numero_lote === 'LOTE-VENC-01');
+  assert.equal(queijoView.capital_parado, 180.00);
 });

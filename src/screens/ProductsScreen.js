@@ -30,6 +30,7 @@ import StockLossModal from '../components/StockLossModal';
 import KardexModal from '../components/KardexModal';
 import SuppliersModal from '../components/SuppliersModal';
 import ClientsModal from '../components/ClientsModal';
+import StockExpiryRiskModal from '../components/StockExpiryRiskModal';
 
 const CATEGORIAS = ['Laticínios', 'Mercearia', 'Bebidas', 'Higiene', 'Limpeza', 'Outros'];
 export default function ProductsScreen() {
@@ -49,6 +50,7 @@ export default function ProductsScreen() {
   const [kardexModalVisible, setKardexModalVisible] = useState(false);
   const [suppliersModalVisible, setSuppliersModalVisible] = useState(false);
   const [clientsModalVisible, setClientsModalVisible] = useState(false);
+  const [expiryRiskModalVisible, setExpiryRiskModalVisible] = useState(false);
   const [selectedKardexProduct, setSelectedKardexProduct] = useState(null);
   
   const [productId, setProductId] = useState(null);
@@ -401,6 +403,20 @@ export default function ProductsScreen() {
             <View style={styles.quickActionTextContainer}>
               <Text style={styles.quickActionTitle}>Clientes & Fiado</Text>
               <Text style={styles.quickActionDesc}>Contas e limites</Text>
+            </View>
+          </TouchableOpacity>
+
+          <TouchableOpacity 
+            style={styles.quickActionCard}
+            onPress={() => setExpiryRiskModalVisible(true)}
+            activeOpacity={0.7}
+          >
+            <View style={[styles.quickActionIconBg, { backgroundColor: '#FEEBC8' }]}>
+              <Ionicons name="time-outline" size={18} color="#C05621" />
+            </View>
+            <View style={styles.quickActionTextContainer}>
+              <Text style={styles.quickActionTitle}>Validade Crítica</Text>
+              <Text style={styles.quickActionDesc}>Triagem e capital</Text>
             </View>
           </TouchableOpacity>
         </View>
@@ -941,6 +957,13 @@ export default function ProductsScreen() {
         visible={clientsModalVisible}
         gerenteId={user?.gerente_id}
         onClose={() => setClientsModalVisible(false)}
+      />
+
+      {/* Modal de Triagem de Validade Crítica & Capital Parado sob Risco (S07) */}
+      <StockExpiryRiskModal
+        visible={expiryRiskModalVisible}
+        gerenteId={user?.gerente_id || 1}
+        onClose={() => setExpiryRiskModalVisible(false)}
       />
     </SafeAreaView>
   );

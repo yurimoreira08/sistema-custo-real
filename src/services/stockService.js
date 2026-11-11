@@ -157,6 +157,31 @@ export async function initStockTables(db) {
       FOREIGN KEY (lote_id) REFERENCES LoteEstoque(id)
     );
     CREATE INDEX IF NOT EXISTS idx_baixa_lote_origem ON BaixaLote(origem_tipo, origem_id, item_venda_id);
+
+    -- View de Triagem de Vencimento Crítico (S07 - José Neto)
+    CREATE VIEW IF NOT EXISTS vw_triagem_validade_lotes AS
+    SELECT 
+      le.id,
+      le.gerente_id,
+      le.produto_id,
+      p.nome AS produto_nome,
+      p.categoria AS produto_categoria,
+      le.numero_lote,
+      le.data_entrada,
+      le.data_validade,
+      le.quantidade_saldo,
+      le.custo_unitario,
+      ROUND(le.quantidade_saldo * le.custo_unitario, 2) AS capital_parado,
+      CASE 
+        WHEN DATE(le.data_validade) < DATE('now') THEN 'VENCIDO'
+        WHEN DATE(le.data_validade) <= DATE('now', '+7 days') THEN 'RISCO_CRITICO'
+        WHEN DATE(le.data_validade) <= DATE('now', '+15 days') THEN 'RISCO_MEDIO'
+        WHEN DATE(le.data_validade) <= DATE('now', '+30 days') THEN 'ALERTA'
+        ELSE 'SEGURO'
+      END AS faixa_risco
+    FROM LoteEstoque le
+    JOIN Produto p ON p.id = le.produto_id
+    WHERE le.quantidade_saldo > 0 AND le.status = 'ativo' AND le.data_validade IS NOT NULL AND le.data_validade != '';
   `);
 }
 
@@ -1084,4 +1109,170 @@ export async function fetchLotesProximosVencimento(gerenteId, diasLimite = 30, d
       impactoFinanceiro: round2(r.quantidade_saldo * r.custo_unitario)
     };
   }).filter(r => r.vencido || r.proximoVencimento);
+}
+
+/**
+ * Consulta e estratifica lotes de produtos divididos por faixas de risco de validade (S07):
+ *  1. Vencidos (Data de validade < hoje)
+ *  2. Risco Crítico (vencimento em até 7 dias)
+ *  3. Risco Médio (vencimento em até 15 dias)
+ *  4. Alerta (vencimento em até 30 dias)
+ * Calcula dinamicamente o Capital Parado sob Risco (saldo × custo/PMP) para cada faixa e consolidado.
+ */
+export async function fetchTriagemValidadeLotes(gerenteId, dataReferencia = null, dbOverride = null) {
+  const db = dbOverride || await getDb();
+  const hoje = (dataReferencia || new Date().toISOString().substring(0, 10)).substring(0, 10);
+
+  const rows = await db.getAllAsync(
+    `SELECT le.*, p.nome as produto_nome, p.categoria as produto_categoria, p.preco_venda as produto_preco_venda
+     FROM LoteEstoque le
+     JOIN Produto p ON p.id = le.produto_id
+     WHERE le.gerente_id = ? AND le.quantidade_saldo > 0 AND le.status = 'ativo' AND le.data_validade IS NOT NULL AND le.data_validade != ''
+     ORDER BY le.data_validade ASC, le.id ASC;`,
+    [gerenteId]
+  );
+
+  const faixas = {
+    vencidos: {
+      titulo: 'Vencidos',
+      subtitulo: 'Data de validade anterior a hoje',
+      cor: '#E53E3E',
+      bgCor: '#FFF5F5',
+      lotes: [],
+      quantidadeLotes: 0,
+      totalItens: 0,
+      capitalParado: 0.0
+    },
+    critico: {
+      titulo: 'Risco Crítico',
+      subtitulo: 'Vencimento em até 7 dias',
+      cor: '#DD6B20',
+      bgCor: '#FFFAF0',
+      lotes: [],
+      quantidadeLotes: 0,
+      totalItens: 0,
+      capitalParado: 0.0
+    },
+    medio: {
+      titulo: 'Risco Médio',
+      subtitulo: 'Vencimento entre 8 e 15 dias',
+      cor: '#D69E2E',
+      bgCor: '#FEFCBF',
+      lotes: [],
+      quantidadeLotes: 0,
+      totalItens: 0,
+      capitalParado: 0.0
+    },
+    alerta: {
+      titulo: 'Alerta',
+      subtitulo: 'Vencimento entre 16 e 30 dias',
+      cor: '#3182CE',
+      bgCor: '#EBF8FF',
+      lotes: [],
+      quantidadeLotes: 0,
+      totalItens: 0,
+      capitalParado: 0.0
+    },
+    seguro: {
+      titulo: 'Normal / Seguro',
+      subtitulo: 'Validade superior a 30 dias',
+      cor: '#38A169',
+      bgCor: '#F0FFF4',
+      lotes: [],
+      quantidadeLotes: 0,
+      totalItens: 0,
+      capitalParado: 0.0
+    }
+  };
+
+  const hojeTimestamp = new Date(hoje + 'T00:00:00Z').getTime();
+
+  for (const r of rows) {
+    const valStr = r.data_validade.substring(0, 10);
+    const valTimestamp = new Date(valStr + 'T00:00:00Z').getTime();
+    const diffMs = valTimestamp - hojeTimestamp;
+    const dias = Math.round(diffMs / (1000 * 60 * 60 * 24));
+    const capitalLote = round2(r.quantidade_saldo * r.custo_unitario);
+
+    const loteDecorado = {
+      ...r,
+      diasParaVencer: dias,
+      capitalParado: capitalLote,
+      custoUnitario: r.custo_unitario,
+      quantidadeSaldo: r.quantidade_saldo
+    };
+
+    if (dias < 0) {
+      loteDecorado.faixaCodigo = 'VENCIDO';
+      faixas.vencidos.lotes.push(loteDecorado);
+      faixas.vencidos.totalItens = round3(faixas.vencidos.totalItens + r.quantidade_saldo);
+      faixas.vencidos.capitalParado = round2(faixas.vencidos.capitalParado + capitalLote);
+    } else if (dias <= 7) {
+      loteDecorado.faixaCodigo = 'RISCO_CRITICO';
+      faixas.critico.lotes.push(loteDecorado);
+      faixas.critico.totalItens = round3(faixas.critico.totalItens + r.quantidade_saldo);
+      faixas.critico.capitalParado = round2(faixas.critico.capitalParado + capitalLote);
+    } else if (dias <= 15) {
+      loteDecorado.faixaCodigo = 'RISCO_MEDIO';
+      faixas.medio.lotes.push(loteDecorado);
+      faixas.medio.totalItens = round3(faixas.medio.totalItens + r.quantidade_saldo);
+      faixas.medio.capitalParado = round2(faixas.medio.capitalParado + capitalLote);
+    } else if (dias <= 30) {
+      loteDecorado.faixaCodigo = 'ALERTA';
+      faixas.alerta.lotes.push(loteDecorado);
+      faixas.alerta.totalItens = round3(faixas.alerta.totalItens + r.quantidade_saldo);
+      faixas.alerta.capitalParado = round2(faixas.alerta.capitalParado + capitalLote);
+    } else {
+      loteDecorado.faixaCodigo = 'SEGURO';
+      faixas.seguro.lotes.push(loteDecorado);
+      faixas.seguro.totalItens = round3(faixas.seguro.totalItens + r.quantidade_saldo);
+      faixas.seguro.capitalParado = round2(faixas.seguro.capitalParado + capitalLote);
+    }
+  }
+
+  faixas.vencidos.quantidadeLotes = faixas.vencidos.lotes.length;
+  faixas.critico.quantidadeLotes = faixas.critico.lotes.length;
+  faixas.medio.quantidadeLotes = faixas.medio.lotes.length;
+  faixas.alerta.quantidadeLotes = faixas.alerta.lotes.length;
+  faixas.seguro.quantidadeLotes = faixas.seguro.lotes.length;
+
+  const capitalTotalEmRisco = round2(
+    faixas.vencidos.capitalParado +
+    faixas.critico.capitalParado +
+    faixas.medio.capitalParado +
+    faixas.alerta.capitalParado
+  );
+
+  const totalLotesEmRisco = 
+    faixas.vencidos.quantidadeLotes +
+    faixas.critico.quantidadeLotes +
+    faixas.medio.quantidadeLotes +
+    faixas.alerta.quantidadeLotes;
+
+  const totalItensEmRisco = round3(
+    faixas.vencidos.totalItens +
+    faixas.critico.totalItens +
+    faixas.medio.totalItens +
+    faixas.alerta.totalItens
+  );
+
+  return {
+    dataReferencia: hoje,
+    capitalTotalEmRisco,
+    totalLotesEmRisco,
+    totalItensEmRisco,
+    faixas,
+    resumo: {
+      vencidosCapital: faixas.vencidos.capitalParado,
+      vencidosQtd: faixas.vencidos.quantidadeLotes,
+      criticoCapital: faixas.critico.capitalParado,
+      criticoQtd: faixas.critico.quantidadeLotes,
+      medioCapital: faixas.medio.capitalParado,
+      medioQtd: faixas.medio.quantidadeLotes,
+      alertaCapital: faixas.alerta.capitalParado,
+      alertaQtd: faixas.alerta.quantidadeLotes,
+      seguroCapital: faixas.seguro.capitalParado,
+      seguroQtd: faixas.seguro.quantidadeLotes
+    }
+  };
 }

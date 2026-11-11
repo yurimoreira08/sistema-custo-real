@@ -487,23 +487,21 @@ export async function cancelarVendaComAutorizacao(dadosCancelamento, dbOverride 
 
       await estornarPagamentosVenda(vendaId, venda.cliente_id, gerenteId, db, fiadoRestanteEstornar);
 
-      // Estornar do caixa os recebimentos em dinheiro se a venda foi vinculada a um turno
-      if (venda.turno_caixa_id) {
-        const pagsVenda = await db.getAllAsync(
-          "SELECT * FROM PagamentoVenda WHERE venda_id = ? AND forma_pagamento = 'dinheiro' AND estornado = 1;",
-          [vendaId]
-        );
-        const valorDinheiroEstorno = pagsVenda.reduce((acc, p) => round2(acc + (parseFloat(p.valor_bruto) || 0)), 0);
-        if (valorDinheiroEstorno > 0) {
-          await estornarVendaDoCaixa({
-            turnoId: venda.turno_caixa_id,
-            vendaId,
-            valorDinheiro: valorDinheiroEstorno,
-            operadorId: usuarioId || gerenteId,
-            gerenteId,
-            justificativa: justificativa.trim()
-          }, db);
-        }
+      // Estornar do caixa os recebimentos em dinheiro refletindo diretamente na gaveta de caixa atual
+      const pagsVenda = await db.getAllAsync(
+        "SELECT * FROM PagamentoVenda WHERE venda_id = ? AND forma_pagamento = 'dinheiro' AND estornado = 1;",
+        [vendaId]
+      );
+      const valorDinheiroEstorno = pagsVenda.reduce((acc, p) => round2(acc + (parseFloat(p.valor_bruto) || 0)), 0);
+      if (valorDinheiroEstorno > 0) {
+        await estornarVendaDoCaixa({
+          turnoId: venda.turno_caixa_id,
+          vendaId,
+          valorDinheiro: valorDinheiroEstorno,
+          operadorId: usuarioId || gerenteId,
+          gerenteId,
+          justificativa: justificativa.trim()
+        }, db);
       }
 
       // 4. Reverter o estoque dos itens vendidos via Kardex (apenas o que ainda não foi devolvido)
@@ -767,6 +765,27 @@ export async function processarDevolucaoParcial(dadosDevolucao, gerenteId, dbOve
       // 4. Se a venda foi em Fiado, estorna o valor proporcional na caderneta
       if (venda.cliente_id && valorTotalEstorno > 0) {
         await estornarFiado(venda.cliente_id, valorTotalEstorno, gerenteId, db);
+      }
+
+      // 4.1 Se a venda teve pagamento em dinheiro, deduz o valor proporcional estornado da gaveta de caixa atual
+      const pagsDinheiro = await db.getAllAsync(
+        "SELECT COALESCE(SUM(valor_bruto), 0) as totalDinheiro FROM PagamentoVenda WHERE venda_id = ? AND forma_pagamento = 'dinheiro';",
+        [vendaId]
+      );
+      const totalDinheiroVenda = parseFloat(pagsDinheiro[0]?.totalDinheiro) || 0;
+      if (totalDinheiroVenda > 0 && valorTotalEstorno > 0 && (venda.valor_total || 0) > 0) {
+        const estornoDinheiro = calcularProporcional(totalDinheiroVenda, valorTotalEstorno, venda.valor_total);
+        if (estornoDinheiro > 0) {
+          await estornarVendaDoCaixa({
+            turnoId: venda.turno_caixa_id,
+            vendaId,
+            valorDinheiro: estornoDinheiro,
+            operadorId: usuarioId || gerenteId,
+            gerenteId,
+            justificativa: `Devolução parcial Venda #${vendaId}: ${motivo.trim()}`,
+            origemReferencia: `DEV-PARCIAL-${devolucaoId}`
+          }, db);
+        }
       }
 
       // 5. Atualiza status da venda (totalmente vs parcialmente devolvida)

@@ -293,3 +293,145 @@ CREATE INDEX IF NOT EXISTS idx_itensvenda_venda ON "ItensVenda"(venda_id);
 CREATE INDEX IF NOT EXISTS idx_venda_status_data ON "Venda"(status, data_venda DESC);
 CREATE INDEX IF NOT EXISTS idx_perda_data ON "PerdaEstoque"(data_perda DESC);
 CREATE INDEX IF NOT EXISTS idx_entrada_fornecedor ON "EntradaMercadoria"(fornecedor_id, data_recebimento DESC);
+
+-- =============================================
+-- SEMANA S06 e S07: Financeiro, Caixa, Fiado e Validade
+-- Integrantes: Francisco Yuri, Yuri Moreira, Zé Neto
+-- =============================================
+
+-- ------------------------------------------------
+-- Tabela: TurnoCaixa (Francisco Yuri - S06/S07)
+-- ------------------------------------------------
+CREATE TABLE IF NOT EXISTS "TurnoCaixa" (
+  id                         BIGSERIAL     PRIMARY KEY,
+  gerente_id                 BIGINT        NOT NULL,
+  operador_id                BIGINT        NOT NULL,
+  status                     TEXT          NOT NULL DEFAULT 'aberto' CHECK(status IN ('aberto', 'bloqueado', 'fechado')),
+  fundo_troco_inicial        NUMERIC(10,2) NOT NULL DEFAULT 0.00 CHECK (fundo_troco_inicial >= 0),
+  total_vendas_dinheiro      NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+  total_vendas_outros        NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+  total_suprimentos          NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+  total_sangrias             NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+  saldo_esperado_dinheiro    NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+  saldo_fechamento_informado NUMERIC(10,2),
+  diferenca_fechamento       NUMERIC(10,2),
+  motivo_bloqueio            TEXT,
+  observacoes                TEXT,
+  data_abertura              TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  data_bloqueio              TIMESTAMPTZ,
+  data_fechamento            TIMESTAMPTZ,
+  FOREIGN KEY (operador_id) REFERENCES "Usuario"(id)
+);
+
+-- ------------------------------------------------
+-- Tabela: MovimentacaoCaixa (Francisco Yuri - S06/S07 Comprovantes Digitais)
+-- ------------------------------------------------
+CREATE TABLE IF NOT EXISTS "MovimentacaoCaixa" (
+  id                 BIGSERIAL     PRIMARY KEY,
+  turno_caixa_id     BIGINT        NOT NULL,
+  gerente_id         BIGINT        NOT NULL,
+  operador_id        BIGINT        NOT NULL,
+  tipo_operacao      TEXT          NOT NULL CHECK(tipo_operacao IN ('ABERTURA', 'VENDA', 'SANGRIA', 'SUPRIMENTO', 'BLOQUEIO', 'DESBLOQUEIO', 'FECHAMENTO', 'ESTORNO')),
+  forma_pagamento    TEXT          DEFAULT 'dinheiro',
+  valor              NUMERIC(10,2) NOT NULL,
+  saldo_apos         NUMERIC(10,2) NOT NULL,
+  origem_referencia  TEXT,
+  justificativa      TEXT,
+  comprovante_hash   TEXT,
+  assinatura_digital TEXT,
+  data_movimentacao  TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  FOREIGN KEY (turno_caixa_id) REFERENCES "TurnoCaixa"(id) ON DELETE CASCADE,
+  FOREIGN KEY (operador_id) REFERENCES "Usuario"(id)
+);
+
+-- ------------------------------------------------
+-- Tabela: PagamentoDebitoCliente (Yuri Mauriz - S07 Caderneta & Amortização Fiado)
+-- ------------------------------------------------
+CREATE TABLE IF NOT EXISTS "PagamentoDebitoCliente" (
+  id               BIGSERIAL     PRIMARY KEY,
+  gerente_id       BIGINT        NOT NULL,
+  cliente_id       BIGINT        NOT NULL,
+  operador_id      BIGINT        NOT NULL,
+  valor            NUMERIC(10,2) NOT NULL CHECK (valor > 0),
+  forma_pagamento  TEXT          NOT NULL DEFAULT 'dinheiro',
+  observacoes      TEXT,
+  saldo_anterior   NUMERIC(10,2) NOT NULL,
+  saldo_resultante NUMERIC(10,2) NOT NULL,
+  data_pagamento   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  FOREIGN KEY (cliente_id) REFERENCES "Cliente"(id),
+  FOREIGN KEY (operador_id) REFERENCES "Usuario"(id)
+);
+
+-- ------------------------------------------------
+-- Tabela: LoteEstoque (Zé Neto - S06/S07 Controle de Validade)
+-- ------------------------------------------------
+CREATE TABLE IF NOT EXISTS "LoteEstoque" (
+  id                 BIGSERIAL     PRIMARY KEY,
+  gerente_id         BIGINT        NOT NULL,
+  produto_id         BIGINT        NOT NULL,
+  entrada_id         BIGINT,
+  item_entrada_id    BIGINT,
+  numero_lote        TEXT          NOT NULL,
+  data_entrada       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  data_validade      DATE,
+  quantidade_inicial NUMERIC(10,3) NOT NULL CHECK (quantidade_inicial >= 0),
+  quantidade_saldo   NUMERIC(10,3) NOT NULL CHECK (quantidade_saldo >= 0),
+  custo_unitario     NUMERIC(10,2) NOT NULL CHECK (custo_unitario >= 0),
+  status             TEXT          NOT NULL DEFAULT 'ativo' CHECK(status IN ('ativo', 'esgotado', 'vencido')),
+  created_at         TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+-- ------------------------------------------------
+-- Tabela: BaixaLote (Zé Neto - S06/S07 Rastreabilidade PEPS)
+-- ------------------------------------------------
+CREATE TABLE IF NOT EXISTS "BaixaLote" (
+  id                    BIGSERIAL     PRIMARY KEY,
+  gerente_id            BIGINT        NOT NULL,
+  lote_id               BIGINT        NOT NULL,
+  produto_id            BIGINT        NOT NULL,
+  origem_tipo           TEXT          NOT NULL,
+  origem_id             BIGINT,
+  item_venda_id         BIGINT,
+  quantidade            NUMERIC(10,3) NOT NULL CHECK (quantidade > 0),
+  quantidade_restaurada NUMERIC(10,3) NOT NULL DEFAULT 0.0 CHECK (quantidade_restaurada >= 0),
+  data_baixa            TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  FOREIGN KEY (lote_id) REFERENCES "LoteEstoque"(id)
+);
+
+-- ------------------------------------------------
+-- View: vw_triagem_validade_lotes (Zé Neto - S07 Faixas de Risco & Capital Parado)
+-- ------------------------------------------------
+CREATE OR REPLACE VIEW vw_triagem_validade_lotes AS
+SELECT 
+  le.id,
+  le.gerente_id,
+  le.produto_id,
+  p.nome AS produto_nome,
+  p.categoria AS produto_categoria,
+  le.numero_lote,
+  le.data_entrada,
+  le.data_validade,
+  le.quantidade_saldo,
+  le.custo_unitario,
+  ROUND(le.quantidade_saldo * le.custo_unitario, 2) AS capital_parado,
+  CASE 
+    WHEN le.data_validade < CURRENT_DATE THEN 'VENCIDO'
+    WHEN le.data_validade <= CURRENT_DATE + INTERVAL '7 days' THEN 'RISCO_CRITICO'
+    WHEN le.data_validade <= CURRENT_DATE + INTERVAL '15 days' THEN 'RISCO_MEDIO'
+    WHEN le.data_validade <= CURRENT_DATE + INTERVAL '30 days' THEN 'ALERTA'
+    ELSE 'SEGURO'
+  END AS faixa_risco
+FROM "LoteEstoque" le
+JOIN "Produto" p ON p.id = le.produto_id AND p.gerente_id = le.gerente_id
+WHERE le.quantidade_saldo > 0 AND le.status = 'ativo' AND le.data_validade IS NOT NULL;
+
+-- ------------------------------------------------
+-- Índices para Turnos, Movimentações e Lotes
+-- ------------------------------------------------
+CREATE INDEX IF NOT EXISTS idx_turno_caixa_operador ON "TurnoCaixa"(operador_id, status);
+CREATE INDEX IF NOT EXISTS idx_mov_caixa_turno ON "MovimentacaoCaixa"(turno_caixa_id, data_movimentacao DESC);
+CREATE INDEX IF NOT EXISTS idx_mov_caixa_comprovante ON "MovimentacaoCaixa"(comprovante_hash);
+CREATE INDEX IF NOT EXISTS idx_pag_debito_cliente ON "PagamentoDebitoCliente"(cliente_id, data_pagamento DESC);
+CREATE INDEX IF NOT EXISTS idx_lote_produto_validade ON "LoteEstoque"(produto_id, data_validade ASC);
+CREATE INDEX IF NOT EXISTS idx_lote_status_saldo ON "LoteEstoque"(status, quantidade_saldo);
+CREATE INDEX IF NOT EXISTS idx_baixa_lote_rastreio ON "BaixaLote"(origem_tipo, origem_id);

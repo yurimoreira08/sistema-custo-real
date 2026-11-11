@@ -2,7 +2,7 @@ import { initSyncQueue, syncOrEnqueue } from './syncService';
 import { getDb } from './dbInstance';
 import { hashPassword } from '../utils/crypto';
 import { supabase, isSupabaseConfigured } from './supabaseClient';
-import { initClienteTable, saveCliente, fetchClientes, fetchClientesInadimplentes, getClienteById, validateLimiteFiado, debitarFiado, estornarFiado, alterarBloqueioInadimplente } from '../services/clientService';
+import { initClienteTable, saveCliente, fetchClientes, fetchClientesInadimplentes, getClienteById, validateLimiteFiado, debitarFiado, estornarFiado, alterarBloqueioInadimplente, fetchExtratoCliente, registrarPagamentoDebitoCliente } from '../services/clientService';
 import { 
   initCashTables, 
   abrirTurnoCaixa, 
@@ -16,7 +16,10 @@ import {
   obterTurnoPorId, 
   obterTurnoAtivo, 
   fetchHistoricoTurnos, 
-  auditarTurnoCaixa 
+  auditarTurnoCaixa,
+  gerarAssinaturaMovimentacao,
+  validarComprovanteDigital,
+  obterComprovanteMovimentacao
 } from '../services/cashService';
 import { 
   initPaymentTables, 
@@ -48,7 +51,8 @@ import {
   sugerirSaidaLotesFIFO,
   baixarLotesFIFO,
   fetchLotesProduto,
-  fetchLotesProximosVencimento 
+  fetchLotesProximosVencimento,
+  fetchTriagemValidadeLotes
 } from '../services/stockService';
 import { 
   initSaleTables, 
@@ -61,14 +65,14 @@ import {
 
 // Re-exportações de serviços para disponibilidade global
 export {
-  // Clientes e Fiado
-  saveCliente, fetchClientes, fetchClientesInadimplentes, getClienteById, validateLimiteFiado, debitarFiado, estornarFiado, alterarBloqueioInadimplente,
-  // Turnos de Caixa, Auditoria e Bloqueio
-  abrirTurnoCaixa, bloquearTurnoCaixa, desbloquearTurnoCaixa, fecharTurnoCaixa, registrarSuprimentoSangria, validarCaixaAtivoParaCheckout, registrarVendaNoCaixa, estornarVendaDoCaixa, obterTurnoPorId, obterTurnoAtivo, fetchHistoricoTurnos, auditarTurnoCaixa,
+  // Clientes, Fiado e Extrato (S01, S02, S06, S07)
+  saveCliente, fetchClientes, fetchClientesInadimplentes, getClienteById, validateLimiteFiado, debitarFiado, estornarFiado, alterarBloqueioInadimplente, fetchExtratoCliente, registrarPagamentoDebitoCliente,
+  // Turnos de Caixa, Auditoria, Comprovantes e Estornos (S06, S07)
+  abrirTurnoCaixa, bloquearTurnoCaixa, desbloquearTurnoCaixa, fecharTurnoCaixa, registrarSuprimentoSangria, validarCaixaAtivoParaCheckout, registrarVendaNoCaixa, estornarVendaDoCaixa, obterTurnoPorId, obterTurnoAtivo, fetchHistoricoTurnos, auditarTurnoCaixa, gerarAssinaturaMovimentacao, validarComprovanteDigital, obterComprovanteMovimentacao,
   // Pagamentos, Taxas, Lucro Real e Auditoria Contábil (Yuri Mauriz)
   fetchFormasPagamento, saveFormaPagamentoConfig, calcularTaxaPagamento, validarPagamentosMistos, registrarPagamentosVenda, estornarPagamentosVenda, fetchPagamentosVenda, apurarLucroReal, auditarConsistenciaContabil,
-  // Estoque, Fornecedores, Kardex, PMP e Auditoria de Kardex / Perdas (Zé Neto)
-  saveFornecedor, fetchFornecedores, getFornecedorById, registrarMovimentacaoKardex, fetchKardex, calcularNovoPMP, registrarEntradaMercadorias, registrarPerdaEstoque, fetchRelatorioPerdas, auditarSaldoKardex, auditarTodosProdutosKardex, fetchRelatorioPerdasAvariasDetalhado, sugerirSaidaLotesFIFO, baixarLotesFIFO, fetchLotesProduto, fetchLotesProximosVencimento,
+  // Estoque, Fornecedores, Kardex, PMP, Lotes e Triagem de Validade (Zé Neto)
+  saveFornecedor, fetchFornecedores, getFornecedorById, registrarMovimentacaoKardex, fetchKardex, calcularNovoPMP, registrarEntradaMercadorias, registrarPerdaEstoque, fetchRelatorioPerdas, auditarSaldoKardex, auditarTodosProdutosKardex, fetchRelatorioPerdasAvariasDetalhado, sugerirSaidaLotesFIFO, baixarLotesFIFO, fetchLotesProduto, fetchLotesProximosVencimento, fetchTriagemValidadeLotes,
   // Vendas, Carrinho, Cancelamento e Devolução (Yuri Moreira)
   validarERecalcularCarrinho, finalizarVendaCompleta, cancelarVendaComAutorizacao, processarDevolucaoParcial, withSaleLock
 };
