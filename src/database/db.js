@@ -385,6 +385,8 @@ export async function enqueueFullSync() {
     await syncOrEnqueue('Venda', 'upsert', {
       id: v.id,
       data_venda: v.data_venda,
+      valor_bruto: v.valor_bruto || v.valor_total,
+      desconto: v.desconto || 0,
       valor_total: v.valor_total,
       valor_cmv: v.valor_cmv,
       valor_opex: v.valor_opex,
@@ -406,6 +408,7 @@ export async function enqueueFullSync() {
       quantidade: it.quantidade,
       preco_unitario: it.preco_unitario,
       preco_custo_unitario: it.preco_custo_unitario,
+      subtotal: it.subtotal || Math.round(it.quantidade * it.preco_unitario * 100) / 100,
       gerente_id: it.gerente_id ?? 1
     });
   }
@@ -843,6 +846,7 @@ export async function registerSale(cartItems, splitPercentages, gerenteId) {
     vendaPayload = {
       id: vendaId,
       data_venda: now,
+      valor_bruto: valorTotal,
       valor_total: valorTotal,
       valor_cmv: valorCmv,
       valor_opex: valorOpex,
@@ -908,6 +912,7 @@ export async function registerSale(cartItems, splitPercentages, gerenteId) {
         quantidade: item.quantidade,
         preco_unitario: item.preco_venda,
         preco_custo_unitario: item.preco_custo,
+        subtotal: Math.round(item.quantidade * item.preco_venda * 100) / 100,
         gerente_id: gerenteId
       });
 

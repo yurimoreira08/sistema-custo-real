@@ -397,10 +397,11 @@ export async function registrarSuprimentoSangria({ turnoId, operadorId, tipo, va
     valido: true
   };
 
+  // Sincroniza apenas as colunas do turno (o comprovante é só para a tela)
+  await syncOrEnqueue('TurnoCaixa', 'upsert', { ...atualizado });
+
   atualizado.comprovante = comprovante;
   atualizado.ultimoComprovante = comprovante;
-
-  await syncOrEnqueue('TurnoCaixa', 'upsert', atualizado);
   return atualizado;
 }
 

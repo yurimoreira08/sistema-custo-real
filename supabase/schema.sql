@@ -43,10 +43,15 @@ CREATE TABLE IF NOT EXISTS "Cliente" (
   nome           TEXT          NOT NULL,
   cpf            TEXT,
   telefone       TEXT,
+  email          TEXT,
   limite_fiado   NUMERIC(10,2) NOT NULL DEFAULT 0.00 CHECK (limite_fiado >= 0),
   saldo_devedor  NUMERIC(10,2) NOT NULL DEFAULT 0.00, -- negativo = crédito a favor do cliente
+  bloqueado_inadimplente INTEGER NOT NULL DEFAULT 0,
+  motivo_bloqueio TEXT,
   ativo          BOOLEAN       NOT NULL DEFAULT TRUE,
-  created_at     TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+  created_at     TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  updated_at     TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  CONSTRAINT "Cliente_id_gerente_key" UNIQUE (id, gerente_id) -- alvo do upsert do app (onConflict id,gerente_id)
 );
 
 -- ------------------------------------------------
@@ -447,3 +452,19 @@ ALTER TABLE "TurnoCaixa" ADD COLUMN IF NOT EXISTS total_recebimentos_fiado NUMER
 ALTER TABLE "MovimentacaoCaixa" DROP CONSTRAINT IF EXISTS "MovimentacaoCaixa_tipo_operacao_check";
 ALTER TABLE "MovimentacaoCaixa" ADD CONSTRAINT "MovimentacaoCaixa_tipo_operacao_check"
   CHECK (tipo_operacao IN ('ABERTURA', 'VENDA', 'SANGRIA', 'SUPRIMENTO', 'BLOQUEIO', 'DESBLOQUEIO', 'FECHAMENTO', 'ESTORNO', 'RECEBIMENTO_FIADO'));
+-- Sincronização de Cliente (S06): colunas que o app envia
+ALTER TABLE "Cliente" ADD COLUMN IF NOT EXISTS email TEXT;
+ALTER TABLE "Cliente" ADD COLUMN IF NOT EXISTS bloqueado_inadimplente INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE "Cliente" ADD COLUMN IF NOT EXISTS motivo_bloqueio TEXT;
+ALTER TABLE "Cliente" ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+-- O app faz upsert com onConflict "id,gerente_id": a tabela precisa de uma restrição única nessas colunas
+DO $$
+DECLARE
+  t text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['Cliente', 'Fornecedor', 'TurnoCaixa'] LOOP
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = t || '_id_gerente_key') THEN
+      EXECUTE format('ALTER TABLE %I ADD CONSTRAINT %I UNIQUE (id, gerente_id);', t, t || '_id_gerente_key');
+    END IF;
+  END LOOP;
+END $$;
