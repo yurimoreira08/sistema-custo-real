@@ -8,6 +8,7 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "test": "node --experimental-sqlite --test test/lucrocerto.test.mjs",
+    "test:integration": "node --no-warnings --import ./test/integration/register.mjs --test test/integration/servicos-reais.test.mjs",
     "eas-build-pre-install": "npm config set legacy-peer-deps true"
   },
   "dependencies": {

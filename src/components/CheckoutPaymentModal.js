@@ -21,6 +21,7 @@ export default function CheckoutPaymentModal({
   visible,
   totalVenda,
   gerenteId,
+  usuarioId,
   onConfirmSale,
   onClose,
   loading = false
@@ -334,7 +335,7 @@ export default function CheckoutPaymentModal({
                       onPress={() => setSelectedClienteId(cli.id)}
                     >
                       <Text style={[styles.clientChipText, isSel && styles.clientChipTextActive]}>
-                        👤 {cli.nome} (Devendo {formatCurrency(cli.saldo_devedor)})
+                        👤 {cli.nome} ({Number(cli.saldo_devedor) < 0 ? `Crédito ${formatCurrency(-Number(cli.saldo_devedor))}` : `Devendo ${formatCurrency(cli.saldo_devedor)}`})
                       </Text>
                     </TouchableOpacity>
                   );
@@ -534,6 +535,7 @@ export default function CheckoutPaymentModal({
         <ClientsModal
           visible={showClientsModal}
           gerenteId={gerenteId}
+          usuarioId={usuarioId}
           onClose={() => {
             setShowClientsModal(false);
             loadInitialData();

@@ -956,6 +956,7 @@ export default function ProductsScreen() {
       <ClientsModal
         visible={clientsModalVisible}
         gerenteId={user?.gerente_id}
+        usuarioId={user?.id}
         onClose={() => setClientsModalVisible(false)}
       />
 

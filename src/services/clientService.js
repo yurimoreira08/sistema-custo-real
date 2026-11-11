@@ -1,6 +1,7 @@
 import { getDb } from '../database/dbInstance';
 import { syncOrEnqueue } from '../database/syncService';
 import { validarDocumento, validarTelefone, formatarDocumento, formatarTelefone } from '../utils/validators';
+import { obterTurnoAtivo, registrarRecebimentoFiadoNoCaixa } from './cashService';
 
 // ========================================================
 // SERVIÇO DE CLIENTES E CADERNETA DE FIADO (S01 / S02 / S06)
@@ -272,9 +273,11 @@ export async function estornarFiado(clienteId, valor, gerenteId, dbOverride = nu
   const valorNum = parseFloat(valor);
   if (isNaN(valorNum) || valorNum <= 0) return;
 
+  // Sem limitar a zero: se o cliente já pagou parte da dívida, o excedente estornado
+  // vira crédito a favor dele (saldo_devedor negativo), abatido na próxima compra fiado.
   await db.runAsync(
     `UPDATE Cliente 
-     SET saldo_devedor = MAX(0.0, saldo_devedor - ?), updated_at = datetime('now') 
+     SET saldo_devedor = ROUND(saldo_devedor - ?, 2), updated_at = datetime('now') 
      WHERE id = ? AND gerente_id = ?;`,
     [valorNum, clienteId, gerenteId]
   );
@@ -422,7 +425,7 @@ export async function fetchExtratoCliente(clienteId, gerenteId, dbOverride = nul
       saldoAcumulado = Math.round((saldoAcumulado + ev.valor) * 100) / 100;
       totalComprasFiado = Math.round((totalComprasFiado + ev.valor) * 100) / 100;
     } else {
-      saldoAcumulado = Math.max(0, Math.round((saldoAcumulado - ev.valor) * 100) / 100);
+      saldoAcumulado = Math.round((saldoAcumulado - ev.valor) * 100) / 100;
       if (ev.tipo === 'PAGAMENTO_DEBITO') {
         totalPagamentos = Math.round((totalPagamentos + ev.valor) * 100) / 100;
       } else {
@@ -477,6 +480,9 @@ export async function registrarPagamentoDebitoCliente({ clienteId, valor, formaP
   if (isNaN(vNum) || vNum <= 0) {
     throw new Error('Valor do pagamento deve ser maior que zero.');
   }
+  if (!operadorId) {
+    throw new Error('Operador responsável pelo recebimento não informado.');
+  }
 
   const cliente = await getClienteById(clienteId, gerenteId, db);
   if (!cliente) {
@@ -488,24 +494,51 @@ export async function registrarPagamentoDebitoCliente({ clienteId, valor, formaP
     throw new Error(`O cliente "${cliente.nome}" não possui saldo devedor em aberto.`);
   }
 
+  // Dinheiro recebido precisa entrar numa gaveta: exige caixa aberto do operador
+  let turno = null;
+  if (formaPagamento === 'dinheiro') {
+    turno = await obterTurnoAtivo(operadorId, gerenteId, db);
+    if (!turno || turno.status !== 'aberto') {
+      throw new Error('Recebimento em dinheiro bloqueado: abra (ou desbloqueie) o seu caixa para registrar o valor na gaveta.');
+    }
+  }
+
   const valorEfetivo = Math.min(vNum, saldoAnt);
   const saldoRes = Math.max(0, Math.round((saldoAnt - valorEfetivo) * 100) / 100);
   const now = new Date().toISOString();
 
-  await db.runAsync(
-    `INSERT INTO PagamentoDebitoCliente (
-      gerente_id, cliente_id, operador_id, valor, forma_pagamento, observacoes, saldo_anterior, saldo_resultante, data_pagamento
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);`,
-    [gerenteId, clienteId, operadorId || 1, valorEfetivo, formaPagamento, observacoes || 'Amortização de fiado', saldoAnt, saldoRes, now]
-  );
+  const executar = async () => {
+    const resPag = await db.runAsync(
+      `INSERT INTO PagamentoDebitoCliente (
+        gerente_id, cliente_id, operador_id, valor, forma_pagamento, observacoes, saldo_anterior, saldo_resultante, data_pagamento
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+      [gerenteId, clienteId, operadorId, valorEfetivo, formaPagamento, observacoes || 'Amortização de fiado', saldoAnt, saldoRes, now]
+    );
 
-  // Atualiza saldo na tabela Cliente
-  await db.runAsync(
-    `UPDATE Cliente 
-     SET saldo_devedor = ?, updated_at = datetime('now')
-     WHERE id = ? AND gerente_id = ?;`,
-    [saldoRes, clienteId, gerenteId]
-  );
+    await db.runAsync(
+      `UPDATE Cliente 
+       SET saldo_devedor = ?, updated_at = datetime('now')
+       WHERE id = ? AND gerente_id = ?;`,
+      [saldoRes, clienteId, gerenteId]
+    );
+
+    if (turno) {
+      await registrarRecebimentoFiadoNoCaixa({
+        turnoId: turno.id,
+        operadorId,
+        gerenteId,
+        valor: valorEfetivo,
+        pagamentoId: resPag.lastInsertRowId,
+        clienteNome: cliente.nome
+      }, db);
+    }
+  };
+
+  if (typeof db.withTransactionAsync === 'function') {
+    await db.withTransactionAsync(executar);
+  } else {
+    await executar();
+  }
 
   const updated = await getClienteById(clienteId, gerenteId, db);
   await syncOrEnqueue('Cliente', 'upsert', updated);
@@ -515,6 +548,7 @@ export async function registrarPagamentoDebitoCliente({ clienteId, valor, formaP
     valorPago: valorEfetivo,
     saldoAnterior: saldoAnt,
     saldoRestante: saldoRes,
-    dataPagamento: now
+    dataPagamento: now,
+    turnoCaixaId: turno ? turno.id : null
   };
 }

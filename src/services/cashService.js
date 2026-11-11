@@ -8,6 +8,55 @@ import { hashPassword } from '../utils/crypto';
 // Responsável: Francisco Yuri da Silva Mauriz / Base Conjunta
 // ========================================================
 
+// Tipos aceitos de movimentação de caixa
+export const TIPOS_MOVIMENTACAO_CAIXA = ['ABERTURA', 'VENDA', 'SANGRIA', 'SUPRIMENTO', 'BLOQUEIO', 'DESBLOQUEIO', 'FECHAMENTO', 'ESTORNO', 'RECEBIMENTO_FIADO'];
+
+function ddlMovimentacaoCaixa(nomeTabela) {
+  return `CREATE TABLE IF NOT EXISTS ${nomeTabela} (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      turno_caixa_id INTEGER NOT NULL,
+      gerente_id INTEGER NOT NULL,
+      operador_id INTEGER NOT NULL,
+      tipo_operacao TEXT NOT NULL CHECK(tipo_operacao IN (${TIPOS_MOVIMENTACAO_CAIXA.map((t) => `'${t}'`).join(', ')})),
+      forma_pagamento TEXT DEFAULT 'dinheiro',
+      valor REAL NOT NULL,
+      saldo_apos REAL NOT NULL,
+      origem_referencia TEXT,
+      justificativa TEXT,
+      comprovante_hash TEXT,
+      assinatura_digital TEXT,
+      data_movimentacao TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (turno_caixa_id) REFERENCES TurnoCaixa(id) ON DELETE CASCADE,
+      FOREIGN KEY (operador_id) REFERENCES Usuario(id)
+    );`;
+}
+
+/**
+ * Bancos criados antes do tipo RECEBIMENTO_FIADO têm um CHECK antigo em tipo_operacao.
+ * O SQLite não altera CHECK com ALTER TABLE, então a tabela é reconstruída preservando os dados.
+ */
+async function migrarCheckMovimentacaoCaixa(db) {
+  const rows = await db.getAllAsync("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'MovimentacaoCaixa';");
+  const ddlAtual = rows[0]?.sql || '';
+  if (!ddlAtual || ddlAtual.includes("'RECEBIMENTO_FIADO'")) return;
+
+  const colunas = 'id, turno_caixa_id, gerente_id, operador_id, tipo_operacao, forma_pagamento, valor, saldo_apos, origem_referencia, justificativa, comprovante_hash, assinatura_digital, data_movimentacao';
+  await db.execAsync('PRAGMA foreign_keys = OFF;');
+  try {
+    await db.withTransactionAsync(async () => {
+      await db.execAsync(`
+        DROP TABLE IF EXISTS MovimentacaoCaixa_migracao;
+        ${ddlMovimentacaoCaixa('MovimentacaoCaixa_migracao')}
+        INSERT INTO MovimentacaoCaixa_migracao (${colunas}) SELECT ${colunas} FROM MovimentacaoCaixa;
+        DROP TABLE MovimentacaoCaixa;
+        ALTER TABLE MovimentacaoCaixa_migracao RENAME TO MovimentacaoCaixa;
+      `);
+    });
+  } finally {
+    await db.execAsync('PRAGMA foreign_keys = ON;');
+  }
+}
+
 /**
  * Inicializa tabelas de turnos de caixa e auditoria de movimentações
  */
@@ -23,6 +72,7 @@ export async function initCashTables(db) {
       total_vendas_outros REAL NOT NULL DEFAULT 0.0,
       total_suprimentos REAL NOT NULL DEFAULT 0.0,
       total_sangrias REAL NOT NULL DEFAULT 0.0,
+      total_recebimentos_fiado REAL NOT NULL DEFAULT 0.0,
       saldo_esperado_dinheiro REAL NOT NULL DEFAULT 0.0,
       saldo_fechamento_informado REAL,
       diferenca_fechamento REAL,
@@ -34,30 +84,13 @@ export async function initCashTables(db) {
       FOREIGN KEY (operador_id) REFERENCES Usuario(id)
     );
 
-    CREATE TABLE IF NOT EXISTS MovimentacaoCaixa (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      turno_caixa_id INTEGER NOT NULL,
-      gerente_id INTEGER NOT NULL,
-      operador_id INTEGER NOT NULL,
-      tipo_operacao TEXT NOT NULL CHECK(tipo_operacao IN ('ABERTURA', 'VENDA', 'SANGRIA', 'SUPRIMENTO', 'BLOQUEIO', 'DESBLOQUEIO', 'FECHAMENTO', 'ESTORNO')),
-      forma_pagamento TEXT DEFAULT 'dinheiro',
-      valor REAL NOT NULL,
-      saldo_apos REAL NOT NULL,
-      origem_referencia TEXT,
-      justificativa TEXT,
-      comprovante_hash TEXT,
-      assinatura_digital TEXT,
-      data_movimentacao TEXT NOT NULL DEFAULT (datetime('now')),
-      FOREIGN KEY (turno_caixa_id) REFERENCES TurnoCaixa(id) ON DELETE CASCADE,
-      FOREIGN KEY (operador_id) REFERENCES Usuario(id)
-    );
+    ${ddlMovimentacaoCaixa('MovimentacaoCaixa')}
 
     CREATE INDEX IF NOT EXISTS idx_turno_operador_status ON TurnoCaixa(operador_id, status);
-    CREATE INDEX IF NOT EXISTS idx_mov_caixa_turno ON MovimentacaoCaixa(turno_caixa_id, data_movimentacao ASC);
-    CREATE INDEX IF NOT EXISTS idx_mov_comprovante ON MovimentacaoCaixa(comprovante_hash);
   `);
 
-  // Migrações de colunas para bancos existentes
+  // Migrações de colunas para bancos existentes (os índices de MovimentacaoCaixa
+  // são criados depois, pois dependem de colunas adicionadas aqui)
   try {
     await db.execAsync("ALTER TABLE Venda ADD COLUMN turno_caixa_id INTEGER;");
   } catch (e) {}
@@ -67,6 +100,15 @@ export async function initCashTables(db) {
   try {
     await db.execAsync("ALTER TABLE MovimentacaoCaixa ADD COLUMN assinatura_digital TEXT;");
   } catch (e) {}
+  try {
+    await db.execAsync("ALTER TABLE TurnoCaixa ADD COLUMN total_recebimentos_fiado REAL NOT NULL DEFAULT 0.0;");
+  } catch (e) {}
+
+  await migrarCheckMovimentacaoCaixa(db);
+  await db.execAsync(`
+    CREATE INDEX IF NOT EXISTS idx_mov_caixa_turno ON MovimentacaoCaixa(turno_caixa_id, data_movimentacao ASC);
+    CREATE INDEX IF NOT EXISTS idx_mov_comprovante ON MovimentacaoCaixa(comprovante_hash);
+  `);
 }
 
 /**
@@ -622,6 +664,57 @@ export async function fetchHistoricoTurnos(gerenteId, limit = 20, dbOverride = n
 }
 
 /**
+ * Lança na gaveta o recebimento em dinheiro de uma dívida de fiado (amortização da caderneta).
+ * Não conta como venda (a venda fiado já foi registrada no checkout), mas entra no saldo físico
+ * esperado e gera comprovante assinado (SHA-256) como as demais movimentações de dinheiro.
+ */
+export async function registrarRecebimentoFiadoNoCaixa({ turnoId, operadorId, gerenteId, valor, pagamentoId, clienteNome }, dbOverride = null) {
+  const db = dbOverride || await getDb();
+  const vNum = parseFloat(valor);
+  if (isNaN(vNum) || vNum <= 0) throw new Error('Valor do recebimento deve ser maior que zero.');
+
+  const turno = await obterTurnoPorId(turnoId, gerenteId, db);
+  if (!turno || turno.status !== 'aberto') {
+    throw new Error('Recebimento em dinheiro exige um caixa aberto e ativo.');
+  }
+
+  const novoSaldoEsperado = sumMoney(turno.saldo_esperado_dinheiro, vNum);
+  const novoTotalRecebimentos = sumMoney(turno.total_recebimentos_fiado || 0, vNum);
+  const now = new Date().toISOString();
+
+  await db.runAsync(
+    `UPDATE TurnoCaixa
+     SET total_recebimentos_fiado = ?, saldo_esperado_dinheiro = ?
+     WHERE id = ? AND gerente_id = ?;`,
+    [novoTotalRecebimentos, novoSaldoEsperado, turnoId, gerenteId]
+  );
+
+  const mov = {
+    turno_caixa_id: turnoId,
+    gerente_id: gerenteId,
+    operador_id: operadorId,
+    tipo_operacao: 'RECEBIMENTO_FIADO',
+    valor: vNum,
+    saldo_apos: novoSaldoEsperado,
+    origem_referencia: `FIADO-PAG-${pagamentoId}`,
+    justificativa: `Recebimento de fiado${clienteNome ? ` - ${clienteNome}` : ''}`,
+    data_movimentacao: now
+  };
+  const { hash, codigoAutenticacao } = gerarAssinaturaMovimentacao(mov);
+
+  const res = await db.runAsync(
+    `INSERT INTO MovimentacaoCaixa (
+      turno_caixa_id, gerente_id, operador_id, tipo_operacao, forma_pagamento, valor, saldo_apos, origem_referencia, justificativa, comprovante_hash, assinatura_digital, data_movimentacao
+    ) VALUES (?, ?, ?, 'RECEBIMENTO_FIADO', 'dinheiro', ?, ?, ?, ?, ?, ?, ?);`,
+    [turnoId, gerenteId, operadorId, vNum, novoSaldoEsperado, mov.origem_referencia, mov.justificativa, codigoAutenticacao, hash, now]
+  );
+
+  const atualizado = await obterTurnoPorId(turnoId, gerenteId, db);
+  await syncOrEnqueue('TurnoCaixa', 'upsert', atualizado);
+  return { movId: res.lastInsertRowId, turno: atualizado, codigoAutenticacao };
+}
+
+/**
  * Auditoria completa das movimentações de um turno com checagem de consistência
  */
 export async function auditarTurnoCaixa(turnoId, gerenteId, dbOverride = null) {
@@ -643,7 +736,7 @@ export async function auditarTurnoCaixa(turnoId, gerenteId, dbOverride = null) {
     const m = movimentacoes[i];
     if (m.tipo_operacao === 'ABERTURA') {
       saldoReconstruido = m.valor;
-    } else if (m.tipo_operacao === 'VENDA' || m.tipo_operacao === 'SUPRIMENTO') {
+    } else if (m.tipo_operacao === 'VENDA' || m.tipo_operacao === 'SUPRIMENTO' || m.tipo_operacao === 'RECEBIMENTO_FIADO') {
       saldoReconstruido = sumMoney(saldoReconstruido, m.valor);
     } else if (m.tipo_operacao === 'SANGRIA' || m.tipo_operacao === 'ESTORNO') {
       saldoReconstruido = subtractMoney(saldoReconstruido, m.valor);

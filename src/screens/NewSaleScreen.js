@@ -505,6 +505,7 @@ export default function NewSaleScreen() {
       <ClientsModal
         visible={clientsModalVisible}
         gerenteId={user?.gerente_id}
+        usuarioId={user?.id}
         onClose={() => setClientsModalVisible(false)}
       />
 
@@ -513,6 +514,7 @@ export default function NewSaleScreen() {
         visible={checkoutModalVisible}
         totalVenda={subtotal}
         gerenteId={user?.gerente_id}
+        usuarioId={user?.id}
         loading={checkoutLoading}
         onConfirmSale={confirmCheckout}
         onClose={() => setCheckoutModalVisible(false)}

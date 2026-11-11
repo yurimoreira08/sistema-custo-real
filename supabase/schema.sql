@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS "Cliente" (
   cpf            TEXT,
   telefone       TEXT,
   limite_fiado   NUMERIC(10,2) NOT NULL DEFAULT 0.00 CHECK (limite_fiado >= 0),
-  saldo_devedor  NUMERIC(10,2) NOT NULL DEFAULT 0.00 CHECK (saldo_devedor >= 0),
+  saldo_devedor  NUMERIC(10,2) NOT NULL DEFAULT 0.00, -- negativo = crédito a favor do cliente
   ativo          BOOLEAN       NOT NULL DEFAULT TRUE,
   created_at     TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
@@ -312,6 +312,7 @@ CREATE TABLE IF NOT EXISTS "TurnoCaixa" (
   total_vendas_outros        NUMERIC(10,2) NOT NULL DEFAULT 0.00,
   total_suprimentos          NUMERIC(10,2) NOT NULL DEFAULT 0.00,
   total_sangrias             NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+  total_recebimentos_fiado   NUMERIC(10,2) NOT NULL DEFAULT 0.00,
   saldo_esperado_dinheiro    NUMERIC(10,2) NOT NULL DEFAULT 0.00,
   saldo_fechamento_informado NUMERIC(10,2),
   diferenca_fechamento       NUMERIC(10,2),
@@ -331,7 +332,7 @@ CREATE TABLE IF NOT EXISTS "MovimentacaoCaixa" (
   turno_caixa_id     BIGINT        NOT NULL,
   gerente_id         BIGINT        NOT NULL,
   operador_id        BIGINT        NOT NULL,
-  tipo_operacao      TEXT          NOT NULL CHECK(tipo_operacao IN ('ABERTURA', 'VENDA', 'SANGRIA', 'SUPRIMENTO', 'BLOQUEIO', 'DESBLOQUEIO', 'FECHAMENTO', 'ESTORNO')),
+  tipo_operacao      TEXT          NOT NULL CHECK(tipo_operacao IN ('ABERTURA', 'VENDA', 'SANGRIA', 'SUPRIMENTO', 'BLOQUEIO', 'DESBLOQUEIO', 'FECHAMENTO', 'ESTORNO', 'RECEBIMENTO_FIADO')),
   forma_pagamento    TEXT          DEFAULT 'dinheiro',
   valor              NUMERIC(10,2) NOT NULL,
   saldo_apos         NUMERIC(10,2) NOT NULL,
@@ -435,3 +436,14 @@ CREATE INDEX IF NOT EXISTS idx_pag_debito_cliente ON "PagamentoDebitoCliente"(cl
 CREATE INDEX IF NOT EXISTS idx_lote_produto_validade ON "LoteEstoque"(produto_id, data_validade ASC);
 CREATE INDEX IF NOT EXISTS idx_lote_status_saldo ON "LoteEstoque"(status, quantidade_saldo);
 CREATE INDEX IF NOT EXISTS idx_baixa_lote_rastreio ON "BaixaLote"(origem_tipo, origem_id);
+
+-- ------------------------------------------------
+-- Migrações para bancos já existentes (idempotentes)
+-- ------------------------------------------------
+-- Crédito a favor do cliente: estorno de venda fiado já paga deixa saldo negativo
+ALTER TABLE "Cliente" DROP CONSTRAINT IF EXISTS "Cliente_saldo_devedor_check";
+-- Recebimento de fiado em dinheiro entra na gaveta do caixa
+ALTER TABLE "TurnoCaixa" ADD COLUMN IF NOT EXISTS total_recebimentos_fiado NUMERIC(10,2) NOT NULL DEFAULT 0.00;
+ALTER TABLE "MovimentacaoCaixa" DROP CONSTRAINT IF EXISTS "MovimentacaoCaixa_tipo_operacao_check";
+ALTER TABLE "MovimentacaoCaixa" ADD CONSTRAINT "MovimentacaoCaixa_tipo_operacao_check"
+  CHECK (tipo_operacao IN ('ABERTURA', 'VENDA', 'SANGRIA', 'SUPRIMENTO', 'BLOQUEIO', 'DESBLOQUEIO', 'FECHAMENTO', 'ESTORNO', 'RECEBIMENTO_FIADO'));

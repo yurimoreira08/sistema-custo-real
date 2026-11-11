@@ -427,6 +427,12 @@ export default function CashRegisterModal({
                         </Text>
                       </View>
                       <View style={styles.cardItem}>
+                        <Text style={styles.cardLabel}>Receb. de Fiado</Text>
+                        <Text style={[styles.cardValue, { color: '#276749' }]}>
+                          +{formatCurrency(turno.total_recebimentos_fiado || 0)}
+                        </Text>
+                      </View>
+                      <View style={styles.cardItem}>
                         <Text style={styles.cardLabel}>Sangrias</Text>
                         <Text style={[styles.cardValue, { color: '#C53030' }]}>
                           -{formatCurrency(turno.total_sangrias)}
@@ -686,9 +692,15 @@ export default function CashRegisterModal({
                         <Text style={styles.receiptFieldLabel}>Tipo Operação:</Text>
                         <Text style={[
                           styles.receiptFieldValue,
-                          { color: comprovanteAtivo.tipo === 'SANGRIA' ? '#C53030' : '#276749', fontWeight: 'bold' }
+                          { color: ['SANGRIA', 'ESTORNO'].includes(comprovanteAtivo.tipo) ? '#C53030' : '#276749', fontWeight: 'bold' }
                         ]}>
-                          {comprovanteAtivo.tipo === 'SANGRIA' ? '🔴 SANGRIA (RETIRADA)' : '🟢 SUPRIMENTO (APORTE)'}
+                          {({
+                            SANGRIA: '🔴 SANGRIA (RETIRADA)',
+                            ESTORNO: '🔴 ESTORNO (DEVOLUÇÃO)',
+                            SUPRIMENTO: '🟢 SUPRIMENTO (APORTE)',
+                            RECEBIMENTO_FIADO: '🟢 RECEBIMENTO DE FIADO',
+                            VENDA: '🟢 VENDA EM DINHEIRO'
+                          })[comprovanteAtivo.tipo] || comprovanteAtivo.tipo}
                         </Text>
                       </View>
 

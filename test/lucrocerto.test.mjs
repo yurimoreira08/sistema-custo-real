@@ -58,7 +58,7 @@ function setupTestDb() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       gerente_id INTEGER NOT NULL,
       nome TEXT NOT NULL,
-      cpf_cnpj TEXT,
+      cpf TEXT,
       telefone TEXT,
       limite_fiado REAL NOT NULL DEFAULT 0.0,
       saldo_devedor REAL NOT NULL DEFAULT 0.0,
@@ -340,7 +340,6 @@ function setupTestDb() {
     FROM LoteEstoque le
     JOIN Produto p ON p.id = le.produto_id
     WHERE le.quantidade_saldo > 0 AND le.status = 'ativo' AND le.data_validade IS NOT NULL;
-    );
   `);
 
   return db;
@@ -1894,7 +1893,7 @@ test('S06 — Item 2: Cadastro de Clientes & Limite (Validação de Documento, C
     const limite = Math.max(0, parseFloat(dados.limite_fiado || 0));
 
     const res = db.prepare(`
-      INSERT INTO Cliente (gerente_id, nome, cpf_cnpj, telefone, limite_fiado, saldo_devedor, bloqueado_inadimplente, motivo_bloqueio)
+      INSERT INTO Cliente (gerente_id, nome, cpf, telefone, limite_fiado, saldo_devedor, bloqueado_inadimplente, motivo_bloqueio)
       VALUES (1, ?, ?, ?, ?, 0.0, ?, ?);
     `).run(dados.nome, dados.cpf || null, dados.telefone || null, limite, dados.bloqueado_inadimplente ? 1 : 0, dados.motivo_bloqueio || null);
 
@@ -2344,7 +2343,7 @@ test('S07 — Item 2: Módulo de Vendas & Fiado (Fiado no Checkout, Abate de Lim
 
   // 1. Cadastra Cliente com Teto de Crédito de R$ 200,00
   db.prepare(`
-    INSERT INTO Cliente (id, gerente_id, nome, cpf_cnpj, telefone, limite_fiado, saldo_devedor, bloqueado_inadimplente)
+    INSERT INTO Cliente (id, gerente_id, nome, cpf, telefone, limite_fiado, saldo_devedor, bloqueado_inadimplente)
     VALUES (1, 1, 'Severino do Ramo', '11144477735', '(86) 99988-7766', 200.0, 0.0, 0);
   `).run();
 

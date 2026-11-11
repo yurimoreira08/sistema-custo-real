@@ -25,6 +25,7 @@ import { formatarDocumento, formatarTelefone, validarDocumento, validarTelefone 
 export default function ClientsModal({
   visible,
   gerenteId,
+  usuarioId,
   onClose,
   onSelectClient = null
 }) {
@@ -216,7 +217,7 @@ export default function ClientsModal({
         clienteId: extratoData.cliente.id,
         valor: val,
         formaPagamento: formaPagamentoDebito,
-        operadorId: 1,
+        operadorId: usuarioId,
         gerenteId,
         observacoes: obsPagamentoDebito.trim() || 'Amortização de fiado na caderneta'
       });
@@ -323,9 +324,9 @@ export default function ClientsModal({
                       </View>
 
                       <View style={[styles.extratoResumoCard, { backgroundColor: '#FFF5F5' }]}>
-                        <Text style={styles.extratoResumoLabel}>DÉBITO ATUAL</Text>
+                        <Text style={styles.extratoResumoLabel}>{extratoData.totais.saldoDevedorAtual < 0 ? 'CRÉDITO A FAVOR' : 'DÉBITO ATUAL'}</Text>
                         <Text style={[styles.extratoResumoVal, { color: extratoData.totais.saldoDevedorAtual > 0 ? '#C53030' : '#276749' }]}>
-                          {formatCurrency(extratoData.totais.saldoDevedorAtual)}
+                          {formatCurrency(Math.abs(extratoData.totais.saldoDevedorAtual))}
                         </Text>
                       </View>
 
@@ -630,7 +631,7 @@ export default function ClientsModal({
 
                           <View style={styles.financeRow}>
                             <Text style={styles.saldoDevedorText}>
-                              Débito: <Text style={{ color: saldo > 0 ? '#C53030' : '#276749', fontWeight: 'bold' }}>{formatCurrency(saldo)}</Text>
+                              {saldo < 0 ? 'Crédito' : 'Débito'}: <Text style={{ color: saldo > 0 ? '#C53030' : '#276749', fontWeight: 'bold' }}>{formatCurrency(Math.abs(saldo))}</Text>
                             </Text>
                             <Text style={styles.limiteText}>
                               Teto: <Text style={{ fontWeight: 'bold' }}>{formatCurrency(limite)}</Text>
