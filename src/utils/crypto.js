@@ -3,10 +3,35 @@ function rightRotate(value, amount) {
   return (value >>> amount) | (value << (32 - amount));
 }
 
+/**
+ * Converte caracteres acima de U+00FF (ex.: "—", "−", emojis) na sua sequência de bytes UTF-8.
+ * Caracteres até U+00FF continuam como 1 byte (Latin-1), preservando os hashes já gravados
+ * (senhas e comprovantes); antes desta conversão o hash retornava null para esses textos.
+ */
+function paraBytesCompativeis(str) {
+  let out = '';
+  for (const ch of String(str)) {
+    const cp = ch.codePointAt(0);
+    if (cp <= 0xff) {
+      out += ch;
+    } else if (cp <= 0x7ff) {
+      out += String.fromCharCode(0xc0 | (cp >> 6), 0x80 | (cp & 0x3f));
+    } else if (cp <= 0xffff) {
+      out += String.fromCharCode(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+    } else {
+      out += String.fromCharCode(
+        0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f)
+      );
+    }
+  }
+  return out;
+}
+
 // Criptografa uma string usando a função hash SHA-256 puramente em JavaScript
-export function hashPassword(ascii) {
-  if (!ascii) return '';
-  
+export function hashPassword(texto) {
+  if (!texto) return '';
+  let ascii = paraBytesCompativeis(texto);
+
   const mathPow = Math.pow;
   const maxWord = 0xffffffff;
   const lengthProperty = 'length';
