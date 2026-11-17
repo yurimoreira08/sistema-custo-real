@@ -12,6 +12,7 @@ import {
 } from '../database/db';
 import { checkNetworkAndSync, getSyncQueueCount } from '../database/syncService';
 import { isSupabaseConfigured } from '../database/supabaseClient';
+import { fetchPainelAlertas } from '../services/alertService';
 import * as Network from 'expo-network';
 import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -41,6 +42,8 @@ export function AppProvider({ children }) {
     totalProducts: 0,
     totalSales: 0
   });
+  // Painel de Alertas & Notificações (S08): badges e alertas proativos
+  const [painelAlertas, setPainelAlertas] = useState(null);
   const [dashboardDetails, setDashboardDetails] = useState({
     vendasHoje: 0,
     transacoesHoje: 0,
@@ -140,7 +143,8 @@ export function AppProvider({ children }) {
         loadSettings(),
         loadSalesHistory(),
         loadDashboardStats(),
-        loadDashboardDetails()
+        loadDashboardDetails(),
+        loadAlertas()
       ]);
     } catch (error) {
       console.error('Erro ao carregar dados gerais:', error);
@@ -175,6 +179,15 @@ export function AppProvider({ children }) {
     if (!user) return;
     const details = await fetchDashboardDetails(user.gerente_id);
     setDashboardDetails(details);
+  };
+
+  const loadAlertas = async () => {
+    if (!user) return;
+    try {
+      setPainelAlertas(await fetchPainelAlertas(user.gerente_id));
+    } catch (e) {
+      console.warn('[AppContext] Erro ao montar painel de alertas:', e);
+    }
   };
 
   const handleLogin = async (emailOrUsername, password) => {
@@ -225,6 +238,7 @@ export function AppProvider({ children }) {
     await loadSalesHistory();
     await loadDashboardStats();
     await loadDashboardDetails();
+    await loadAlertas();
     await refreshSyncStatus();
   };
 
@@ -243,6 +257,8 @@ export function AppProvider({ children }) {
         updateSettings: handleUpdateSettings,
         refreshData,
         loadProducts,
+        painelAlertas,
+        loadAlertas,
         syncStatus,
         forceSync,
         refreshSyncStatus

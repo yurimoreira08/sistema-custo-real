@@ -16,8 +16,10 @@ const Tab = createBottomTabNavigator();
 
 // Define a estrutura de abas inferiores do aplicativo baseado no cargo do usuário
 function AppTabs() {
-  const { user } = useApp();
+  const { user, painelAlertas } = useApp();
   const isGerente = user?.cargo === 'gerente';
+  // Badge com os alertas que exigem ação imediata (crítico + alto)
+  const badgeAlertas = painelAlertas?.badgeCount > 0 ? painelAlertas.badgeCount : undefined;
 
   return (
     <Tab.Navigator
@@ -55,7 +57,7 @@ function AppTabs() {
         },
       })}
     >
-      <Tab.Screen name="Início" component={DashboardScreen} />
+      <Tab.Screen name="Início" component={DashboardScreen} options={{ tabBarBadge: badgeAlertas }} />
       <Tab.Screen name="Produtos" component={ProductsScreen} />
       <Tab.Screen name="Venda" component={NewSaleScreen} />
       {isGerente && <Tab.Screen name="Relatórios" component={ReportsScreen} />}

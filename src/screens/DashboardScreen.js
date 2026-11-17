@@ -17,12 +17,25 @@ import SyncBadge from '../components/SyncBadge';
 import ManagerAuthModal from '../components/ManagerAuthModal';
 import SaleReturnModal from '../components/SaleReturnModal';
 import ConfirmationModal from '../components/ConfirmationModal';
+import AlertsPanelModal from '../components/AlertsPanelModal';
 import { cancelarVendaComAutorizacao } from '../database/db';
 
 // Tela principal (Dashboard) que exibe o resumo financeiro, controle de estoque e últimas vendas
 export default function DashboardScreen() {
-  const { user, logout, dashboardDetails, refreshData } = useApp();
+  const { user, logout, dashboardDetails, refreshData, painelAlertas, loadAlertas } = useApp();
   const [refreshing, setRefreshing] = useState(false);
+  const [alertasVisible, setAlertasVisible] = useState(false);
+  const [alertasCarregando, setAlertasCarregando] = useState(false);
+
+  const badgeAlertas = painelAlertas?.badgeCount || 0;
+  const liquidacao = painelAlertas?.liquidacao;
+
+  const abrirAlertas = async () => {
+    setAlertasVisible(true);
+    setAlertasCarregando(true);
+    await loadAlertas();
+    setAlertasCarregando(false);
+  };
   const navigation = useNavigation();
 
   // Modais de Cancelamento e Devolução (Yuri Moreira S03/S04)
@@ -102,6 +115,14 @@ export default function DashboardScreen() {
           <Text style={[styles.headerTitle, { flexShrink: 1 }]} numberOfLines={1}>LucroCerto</Text>
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          <TouchableOpacity style={styles.bellBtn} onPress={abrirAlertas} accessibilityLabel="Abrir alertas e notificações">
+            <Ionicons name={badgeAlertas > 0 ? 'notifications' : 'notifications-outline'} size={22} color="#FFF" />
+            {badgeAlertas > 0 && (
+              <View style={styles.bellBadge}>
+                <Text style={styles.bellBadgeText}>{badgeAlertas > 99 ? '99+' : badgeAlertas}</Text>
+              </View>
+            )}
+          </TouchableOpacity>
           <SyncBadge />
           <TouchableOpacity style={styles.logoutBtn} onPress={logout}>
             <Text style={styles.logoutText}>Sair</Text>
@@ -124,6 +145,26 @@ export default function DashboardScreen() {
           </View>
           <Ionicons name="cart" size={72} color="rgba(255, 255, 255, 0.15)" style={styles.bannerCartIcon} />
         </View>
+
+        {/* Alerta proativo de liquidação antecipada antes do vencimento (S08) */}
+        {liquidacao && liquidacao.lotesParaLiquidar + liquidacao.lotesVencidos > 0 && (
+          <TouchableOpacity style={styles.liquidacaoBanner} onPress={abrirAlertas} activeOpacity={0.8}>
+            <Ionicons name="pricetags" size={26} color="#C05621" />
+            <View style={{ flex: 1, marginLeft: 10 }}>
+              <Text style={styles.liquidacaoTitulo}>
+                {liquidacao.lotesParaLiquidar > 0
+                  ? `${liquidacao.lotesParaLiquidar} lote(s) para liquidar antes do vencimento`
+                  : `${liquidacao.lotesVencidos} lote(s) vencido(s) na gôndola`}
+              </Text>
+              <Text style={styles.liquidacaoSub}>
+                {liquidacao.lotesParaLiquidar > 0
+                  ? `Promoção sugerida pode recuperar até ${formatCurrency(liquidacao.receitaPotencial)}. Toque para ver.`
+                  : 'Retire da venda e registre a perda. Toque para ver.'}
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color="#C05621" />
+          </TouchableOpacity>
+        )}
 
         <View style={styles.gridContainer}>
           <View style={styles.gridRow}>
@@ -337,6 +378,17 @@ export default function DashboardScreen() {
         type={alertConfig.type}
         onConfirm={() => setAlertConfig({ visible: false, title: '', message: '', type: 'info' })}
       />
+
+      {/* Painel de Alertas & Notificações (S08) */}
+      <AlertsPanelModal
+        visible={alertasVisible}
+        painel={painelAlertas}
+        carregando={alertasCarregando}
+        gerenteId={user?.gerente_id}
+        onClose={() => setAlertasVisible(false)}
+        onRefresh={abrirAlertas}
+        onIrParaProdutos={() => navigation.navigate('Produtos')}
+      />
     </SafeAreaView>
   );
 }
@@ -370,6 +422,48 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: 'bold',
     color: '#FFF',
+  },
+  bellBtn: {
+    padding: 4,
+  },
+  bellBadge: {
+    position: 'absolute',
+    top: -2,
+    right: -4,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    paddingHorizontal: 4,
+    backgroundColor: '#E53E3E',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: '#1E63EC',
+  },
+  bellBadgeText: {
+    color: '#FFF',
+    fontSize: 10,
+    fontWeight: 'bold',
+  },
+  liquidacaoBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFAF0',
+    borderWidth: 1,
+    borderColor: '#FBD38D',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 14,
+  },
+  liquidacaoTitulo: {
+    fontSize: 13,
+    fontWeight: 'bold',
+    color: '#7B341E',
+  },
+  liquidacaoSub: {
+    fontSize: 11,
+    color: '#9C4221',
+    marginTop: 2,
   },
   logoutBtn: {
     backgroundColor: 'rgba(255, 255, 255, 0.2)',
