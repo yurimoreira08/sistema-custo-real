@@ -301,3 +301,20 @@ test('S08 · Painel de Alertas: liquidação antecipada antes do vencimento', as
 
   assert.equal(sugerirPrecoLiquidacao({ precoVenda: 10, custoUnitario: 5, quantidade: 1, faixaCodigo: 'SEGURO' }), null);
 });
+
+// ---------------------------------------------------------------------------
+test('Build · detecção de rede tolerante e sincronização ao entrar no app', async () => {
+  const { estaOnline } = await import('../../src/database/syncService.js');
+  const { sincronizarDadosDaNuvem } = await import('../../src/database/db.js');
+
+  // isInternetReachable null (indeterminado no Android) não pode bloquear o sync
+  assert.equal(estaOnline({ isConnected: true, isInternetReachable: null }), true);
+  assert.equal(estaOnline({ isConnected: true, isInternetReachable: true }), true);
+  assert.equal(estaOnline({ isConnected: true, isInternetReachable: false }), false);
+  assert.equal(estaOnline({ isConnected: false, isInternetReachable: null }), false);
+  assert.equal(estaOnline(null), false);
+
+  // Sem Supabase configurado: não tenta baixar nada
+  await novoBanco();
+  assert.deepEqual(await sincronizarDadosDaNuvem(G), { puxou: false, motivo: 'nao_configurado' });
+});

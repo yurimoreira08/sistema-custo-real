@@ -1,4 +1,4 @@
-import { initSyncQueue, syncOrEnqueue } from './syncService';
+import { initSyncQueue, syncOrEnqueue, checkNetworkAndSync, getSyncQueueCount } from './syncService';
 import { getDb } from './dbInstance';
 import { hashPassword } from '../utils/crypto';
 import { supabase, isSupabaseConfigured } from './supabaseClient';
@@ -513,6 +513,27 @@ export async function pullDataFromSupabase(gerenteId) {
   } catch (error) {
     console.error('[db] Erro na sincronização reversa (pull):', error);
   }
+}
+
+/**
+ * Sincronização completa ao entrar no app: primeiro envia a fila local pendente e, só se ela
+ * esvaziar, baixa os dados do Supabase. Assim um aparelho novo (build recém-instalado, que
+ * começa apenas com o seed) recebe produtos, vendas e configurações da nuvem, sem que o
+ * download sobrescreva alterações locais ainda não enviadas.
+ * @returns {Promise<{ puxou: boolean, motivo?: string }>}
+ */
+export async function sincronizarDadosDaNuvem(gerenteId) {
+  if (!isSupabaseConfigured() || !gerenteId) return { puxou: false, motivo: 'nao_configurado' };
+
+  await checkNetworkAndSync();
+  const pendentes = await getSyncQueueCount();
+  if (pendentes > 0) {
+    console.log(`[db] ${pendentes} operação(ões) ainda pendente(s): download da nuvem adiado.`);
+    return { puxou: false, motivo: 'fila_pendente' };
+  }
+
+  await pullDataFromSupabase(gerenteId);
+  return { puxou: true };
 }
 
 // Autentica as credenciais do usuário usando criptografia e fallback online na nuvem

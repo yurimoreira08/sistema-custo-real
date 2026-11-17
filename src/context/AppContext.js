@@ -8,9 +8,10 @@ import {
   fetchSalesHistory, 
   fetchDashboardStats,
   fetchDashboardDetails,
-  syncActiveUser
+  syncActiveUser,
+  sincronizarDadosDaNuvem
 } from '../database/db';
-import { checkNetworkAndSync, getSyncQueueCount } from '../database/syncService';
+import { checkNetworkAndSync, getSyncQueueCount, estaOnline } from '../database/syncService';
 import { isSupabaseConfigured } from '../database/supabaseClient';
 import { fetchPainelAlertas } from '../services/alertService';
 import * as Network from 'expo-network';
@@ -106,7 +107,7 @@ export function AppProvider({ children }) {
     let netSub;
     try {
       netSub = Network.addNetworkStateListener((state) => {
-        if (state.isConnected && state.isInternetReachable) {
+        if (estaOnline(state)) {
           drainIfPending();
         } else {
           refreshSyncStatus();
@@ -130,9 +131,11 @@ export function AppProvider({ children }) {
 
   useEffect(() => {
     if (dbReady && user) {
-      syncActiveUser(user, setUser).then(() => {
-        loadAllData();
-      });
+      // Envia pendências e baixa os dados da nuvem (instalação nova do build começa só com o seed local)
+      syncActiveUser(user, setUser)
+        .then(() => sincronizarDadosDaNuvem(user.gerente_id))
+        .catch((e) => console.warn('[AppContext] Erro ao sincronizar com a nuvem:', e))
+        .finally(() => loadAllData());
     }
   }, [dbReady, user]);
 
@@ -218,7 +221,7 @@ export function AppProvider({ children }) {
       let isOnline = true;
       try {
         const net = await Network.getNetworkStateAsync();
-        isOnline = !!(net.isConnected && net.isInternetReachable);
+        isOnline = estaOnline(net);
       } catch (e) {}
       setSyncStatus((prev) => ({ ...prev, configured, pendingCount, isOnline }));
     } catch (e) {}

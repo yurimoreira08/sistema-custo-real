@@ -17,6 +17,16 @@ export async function initSyncQueue() {
   `);
 }
 
+/**
+ * Decide se o aparelho está online a partir do estado do expo-network.
+ * No Android, `isInternetReachable` pode vir `null` (indeterminado) logo ao abrir o app
+ * ou em algumas redes; só tratamos como offline quando ele é explicitamente `false`.
+ * Se a rede falhar de fato, a operação cai na fila (isNetworkError) e é reenviada depois.
+ */
+export function estaOnline(networkState) {
+  return !!networkState?.isConnected && networkState?.isInternetReachable !== false;
+}
+
 // Insere uma nova tarefa de sincronização pendente na fila SQLite
 export async function enqueueSyncOperation(tableName, operation, payload) {
   try {
@@ -169,7 +179,7 @@ export async function processSyncQueue() {
 export async function checkNetworkAndSync() {
   try {
     const networkState = await Network.getNetworkStateAsync();
-    if (networkState.isConnected && networkState.isInternetReachable) {
+    if (estaOnline(networkState)) {
       await processSyncQueue();
     } else {
       console.log('[SyncService] Sem rede — sync adiado.');
@@ -187,7 +197,7 @@ export async function syncOrEnqueue(tableName, operation, payload) {
 
   try {
     const networkState = await Network.getNetworkStateAsync();
-    const isOnline = networkState.isConnected && networkState.isInternetReachable;
+    const isOnline = estaOnline(networkState);
 
     if (isOnline) {
       const res = await syncToSupabase(tableName, operation, payload);
