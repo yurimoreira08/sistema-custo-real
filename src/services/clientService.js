@@ -520,6 +520,7 @@ export async function registrarPagamentoDebitoCliente({ clienteId, valor, formaP
   const troco = subtractMoney(vNum, valorEfetivo);
   const now = new Date().toISOString();
 
+  let pagamentoId = null;
   const executar = async () => {
     const resPag = await db.runAsync(
       `INSERT INTO PagamentoDebitoCliente (
@@ -527,6 +528,7 @@ export async function registrarPagamentoDebitoCliente({ clienteId, valor, formaP
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);`,
       [gerenteId, clienteId, operadorId, valorEfetivo, formaPagamento, observacoes || 'Amortização de fiado', saldoAnt, saldoRes, now]
     );
+    pagamentoId = resPag.lastInsertRowId;
 
     await db.runAsync(
       `UPDATE Cliente 
@@ -554,7 +556,19 @@ export async function registrarPagamentoDebitoCliente({ clienteId, valor, formaP
   }
 
   const updated = await getClienteById(clienteId, gerenteId, db);
+  // Ordem importa: na nuvem o pagamento tem chave estrangeira para Cliente,
+  // então o cliente atualizado sobe (ou entra na fila) antes do pagamento.
   await syncOrEnqueue('Cliente', 'upsert', updated);
+
+  // Envia o registro do pagamento exatamente como foi gravado no aparelho, para que o
+  // histórico da caderneta (extrato de amortizações) também exista no Supabase.
+  const [pagamentoGravado] = await db.getAllAsync(
+    'SELECT * FROM PagamentoDebitoCliente WHERE id = ? AND gerente_id = ? LIMIT 1;',
+    [pagamentoId, gerenteId]
+  );
+  if (pagamentoGravado) {
+    await syncOrEnqueue('PagamentoDebitoCliente', 'upsert', pagamentoGravado);
+  }
 
   const limite = Number(updated.limite_fiado) || 0;
   const limiteDisponivelAnterior = calcularLimiteDisponivel(limite, saldoAnt);

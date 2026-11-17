@@ -368,6 +368,7 @@ CREATE TABLE IF NOT EXISTS "PagamentoDebitoCliente" (
   saldo_anterior   NUMERIC(10,2) NOT NULL,
   saldo_resultante NUMERIC(10,2) NOT NULL,
   data_pagamento   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  CONSTRAINT "PagamentoDebitoCliente_id_gerente_key" UNIQUE (id, gerente_id), -- alvo do upsert do app (onConflict id,gerente_id)
   FOREIGN KEY (cliente_id) REFERENCES "Cliente"(id),
   FOREIGN KEY (operador_id) REFERENCES "Usuario"(id)
 );
@@ -471,7 +472,7 @@ DO $$
 DECLARE
   t text;
 BEGIN
-  FOREACH t IN ARRAY ARRAY['Cliente', 'Fornecedor', 'TurnoCaixa'] LOOP
+  FOREACH t IN ARRAY ARRAY['Cliente', 'Fornecedor', 'TurnoCaixa', 'PagamentoDebitoCliente'] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = t || '_id_gerente_key') THEN
       EXECUTE format('ALTER TABLE %I ADD CONSTRAINT %I UNIQUE (id, gerente_id);', t, t || '_id_gerente_key');
     END IF;
