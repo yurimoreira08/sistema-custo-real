@@ -71,11 +71,34 @@ export default function CheckoutPaymentModal({
           valor_liquido: subtotalInicial
         }
       ]);
+      // O botão de forma destacado precisa refletir o pagamento real (Dinheiro). Sem isso,
+      // o "Fiado" da venda anterior continuava aceso e a venda era gravada em dinheiro,
+      // sem lançar a dívida na caderneta do cliente.
+      setSelectedForma('dinheiro');
+      setSelectedOperadora('Padrao');
+      setValorParcela('');
       setDescontoGlobal('0');
       setSelectedClienteId(null);
       setCanalVenda('balcao');
     } catch (e) {
       console.error('Erro ao carregar dados do checkout:', e);
+    }
+  };
+
+  /**
+   * Recarrega só a lista de clientes (após cadastrar/editar em "Cadastrar / Limites"),
+   * preservando os pagamentos e o cliente já escolhidos na venda em andamento.
+   */
+  const recarregarClientes = async () => {
+    try {
+      const cliList = await fetchClientes(gerenteId);
+      setClientes(cliList);
+      // Se o cliente escolhido foi desativado, desmarca para não vender fiado a ele
+      if (selectedClienteId && !cliList.some(c => c.id === selectedClienteId)) {
+        setSelectedClienteId(null);
+      }
+    } catch (e) {
+      console.error('Erro ao recarregar clientes do checkout:', e);
     }
   };
 
@@ -538,7 +561,7 @@ export default function CheckoutPaymentModal({
           usuarioId={usuarioId}
           onClose={() => {
             setShowClientsModal(false);
-            loadInitialData();
+            recarregarClientes();
           }}
         />
       </KeyboardAvoidingView>
