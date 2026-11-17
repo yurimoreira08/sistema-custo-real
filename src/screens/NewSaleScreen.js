@@ -240,6 +240,13 @@ export default function NewSaleScreen() {
     }
   };
 
+  // Aparência do botão de caixa conforme o estado do turno
+  const statusCaixa = !turnoCaixa
+    ? { titulo: 'Caixa fechado', subtitulo: 'Toque para abrir', cor: '#C53030', icone: 'lock-open-outline' }
+    : turnoCaixa.status === 'aberto'
+      ? { titulo: `Caixa #${turnoCaixa.id}`, subtitulo: 'Aberto • vendendo', cor: '#2E7D32', icone: 'cash-outline' }
+      : { titulo: `Caixa #${turnoCaixa.id}`, subtitulo: 'Bloqueado', cor: '#D97706', icone: 'lock-closed' };
+
   const renderCartItem = ({ item }) => (
     <View style={styles.cartItemRow}>
       <View style={styles.cartItemLeft}>
@@ -269,37 +276,7 @@ export default function NewSaleScreen() {
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <Ionicons name="cart" size={24} color="#FFF" style={{ marginRight: 8 }} />
-          <View>
-            <Text style={styles.headerTitle}>Nova Venda</Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
-              {/* Pill de Status do Caixa */}
-            <TouchableOpacity 
-              style={[
-                styles.caixaStatusPill,
-                !turnoCaixa ? styles.caixaFechadoPill : turnoCaixa.status === 'aberto' ? styles.caixaAbertoPill : styles.caixaBloqueadoPill
-              ]}
-              onPress={() => setCashModalVisible(true)}
-            >
-              <Ionicons 
-                name={!turnoCaixa ? "ellipse" : turnoCaixa.status === 'aberto' ? "checkmark-circle" : "lock-closed"} 
-                size={11} 
-                color="#FFF" 
-                style={{ marginRight: 4 }} 
-              />
-              <Text style={styles.caixaStatusPillText}>
-                {!turnoCaixa ? "Caixa Fechado" : turnoCaixa.status === 'aberto' ? `Caixa #${turnoCaixa.id}` : "Bloqueado"}
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity 
-              style={styles.clientesPill}
-              onPress={() => setClientsModalVisible(true)}
-            >
-              <Ionicons name="people" size={11} color="#FFF" style={{ marginRight: 4 }} />
-              <Text style={styles.caixaStatusPillText}>Clientes & Fiado</Text>
-            </TouchableOpacity>
-            </View>
-          </View>
+          <Text style={styles.headerTitle}>Nova Venda</Text>
         </View>
 
         <View style={styles.headerRight}>
@@ -313,6 +290,43 @@ export default function NewSaleScreen() {
             <Text style={styles.cancelBtnText}>Cancelar</Text>
           </TouchableOpacity>
         </View>
+      </View>
+
+      {/* Barra de ações: Caixa e Clientes & Fiado (botões grandes, fáceis de tocar) */}
+      <View style={styles.actionBar}>
+        <TouchableOpacity
+          style={styles.actionBtn}
+          onPress={() => setCashModalVisible(true)}
+          activeOpacity={0.8}
+          accessibilityRole="button"
+          accessibilityLabel={`Caixa: ${statusCaixa.titulo}. ${statusCaixa.subtitulo}`}
+        >
+          <View style={[styles.actionIcon, { backgroundColor: statusCaixa.cor }]}>
+            <Ionicons name={statusCaixa.icone} size={20} color="#FFF" />
+          </View>
+          <View style={styles.actionTextBox}>
+            <Text style={styles.actionTitle} numberOfLines={1}>{statusCaixa.titulo}</Text>
+            <Text style={[styles.actionSubtitle, { color: statusCaixa.cor }]} numberOfLines={1}>{statusCaixa.subtitulo}</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={16} color="#A0AEC0" />
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.actionBtn}
+          onPress={() => setClientsModalVisible(true)}
+          activeOpacity={0.8}
+          accessibilityRole="button"
+          accessibilityLabel="Clientes e fiado: cadastro, extrato e cobrança"
+        >
+          <View style={[styles.actionIcon, { backgroundColor: '#4338CA' }]}>
+            <Ionicons name="people" size={20} color="#FFF" />
+          </View>
+          <View style={styles.actionTextBox}>
+            <Text style={styles.actionTitle} numberOfLines={1}>Clientes & Fiado</Text>
+            <Text style={styles.actionSubtitle} numberOfLines={1}>Cadastro e cobrança</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={16} color="#A0AEC0" />
+        </TouchableOpacity>
       </View>
 
       <View style={styles.mainContainer}>
@@ -579,38 +593,49 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#FFF',
   },
-  caixaStatusPill: {
+  actionBar: {
+    flexDirection: 'row',
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    backgroundColor: '#1E63EC',
+  },
+  actionBtn: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
+    backgroundColor: '#FFF',
     borderRadius: 12,
-    marginTop: 2,
-    alignSelf: 'flex-start'
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    minHeight: 56,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
   },
-  caixaAbertoPill: {
-    backgroundColor: '#2E7D32'
-  },
-  caixaBloqueadoPill: {
-    backgroundColor: '#D97706'
-  },
-  caixaFechadoPill: {
-    backgroundColor: '#C53030'
-  },
-  clientesPill: {
-    flexDirection: 'row',
+  actionIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 12,
-    marginTop: 2,
-    backgroundColor: '#4338CA',
-    alignSelf: 'flex-start'
+    justifyContent: 'center',
+    marginRight: 8,
   },
-  caixaStatusPillText: {
-    color: '#FFF',
-    fontSize: 10,
-    fontWeight: 'bold'
+  actionTextBox: {
+    flex: 1,
+  },
+  actionTitle: {
+    fontSize: 13,
+    fontWeight: 'bold',
+    color: '#1A202C',
+  },
+  actionSubtitle: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#718096',
+    marginTop: 1,
   },
   headerRight: {
     flexDirection: 'row',
