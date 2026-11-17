@@ -10,7 +10,8 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
-  Switch
+  Switch,
+  Linking
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { 
@@ -18,7 +19,9 @@ import {
   saveCliente, 
   alterarBloqueioInadimplente,
   fetchExtratoCliente,
-  registrarPagamentoDebitoCliente
+  registrarPagamentoDebitoCliente,
+  gerarCobrancaWhatsApp,
+  fetchFilaCobrancaWhatsApp
 } from '../services/clientService';
 import { formatarDocumento, formatarTelefone, validarDocumento, validarTelefone } from '../utils/validators';
 
@@ -57,6 +60,11 @@ export default function ClientsModal({
   const [obsPagamentoDebito, setObsPagamentoDebito] = useState('');
   const [salvandoPagamento, setSalvandoPagamento] = useState(false);
 
+  // Amortização & Cobrança WhatsApp (S08)
+  const [ultimoPagamento, setUltimoPagamento] = useState(null); // retorno da amortização (recibo e limite recomposto)
+  const [somenteDevedores, setSomenteDevedores] = useState(false);
+  const [filaCobranca, setFilaCobranca] = useState([]); // ordem de prioridade da cobrança ativa
+
   useEffect(() => {
     if (visible && gerenteId) {
       carregarClientes();
@@ -67,8 +75,12 @@ export default function ClientsModal({
     setLoading(true);
     setErroMsg('');
     try {
-      const list = await fetchClientes(gerenteId, false);
+      const [list, fila] = await Promise.all([
+        fetchClientes(gerenteId, false),
+        fetchFilaCobrancaWhatsApp(gerenteId)
+      ]);
       setClientes(list);
+      setFilaCobranca(fila);
     } catch (e) {
       console.error('Erro ao carregar clientes:', e);
       setErroMsg('Erro ao listar clientes.');
@@ -191,6 +203,7 @@ export default function ClientsModal({
     setErroMsg('');
     setSucessoMsg('');
     setValorPagamentoDebito('');
+    setUltimoPagamento(null);
     try {
       const ext = await fetchExtratoCliente(cli.id, gerenteId);
       setExtratoData(ext);
@@ -221,7 +234,13 @@ export default function ClientsModal({
         gerenteId,
         observacoes: obsPagamentoDebito.trim() || 'Amortização de fiado na caderneta'
       });
-      setSucessoMsg(`Pagamento de ${formatCurrency(res.valorPago)} recebido com sucesso! Saldo restante: ${formatCurrency(res.saldoRestante)}.`);
+      setUltimoPagamento(res);
+      setSucessoMsg(
+        `Pagamento de ${formatCurrency(res.valorPago)} recebido! ` +
+        (res.quitado ? 'Caderneta quitada. ' : `Saldo restante: ${formatCurrency(res.saldoRestante)}. `) +
+        `Limite liberado na hora: +${formatCurrency(res.limiteRecomposto)} (disponível ${formatCurrency(res.limiteDisponivel)}).` +
+        (res.troco > 0 ? ` Troco a devolver: ${formatCurrency(res.troco)}.` : '')
+      );
       setValorPagamentoDebito('');
       setObsPagamentoDebito('');
       // Recarrega extrato e lista de clientes
@@ -235,7 +254,36 @@ export default function ClientsModal({
     }
   };
 
-  const clientesFiltrados = clientes.filter(c =>
+  // Abre o WhatsApp com a mensagem pronta (o lojista revisa e envia)
+  const abrirWhatsApp = async (link) => {
+    if (!link) {
+      setErroMsg('Telefone do cliente ausente ou inválido para WhatsApp. Atualize o cadastro com DDD + número.');
+      return;
+    }
+    try {
+      await Linking.openURL(link);
+    } catch (e) {
+      setErroMsg('Não foi possível abrir o WhatsApp neste aparelho.');
+    }
+  };
+
+  const handleCobrarWhatsApp = async (clienteIdCobranca) => {
+    setErroMsg('');
+    try {
+      const cobranca = await gerarCobrancaWhatsApp(clienteIdCobranca, gerenteId);
+      await abrirWhatsApp(cobranca.link);
+    } catch (e) {
+      setErroMsg(e.message || 'Erro ao gerar cobrança.');
+    }
+  };
+
+  // Com o filtro de devedores, a lista segue a prioridade da fila de cobrança
+  const ordemCobranca = new Map(filaCobranca.map((f, i) => [f.clienteId, i]));
+  const clientesBase = somenteDevedores
+    ? clientes.filter((c) => ordemCobranca.has(c.id)).sort((a, b) => ordemCobranca.get(a.id) - ordemCobranca.get(b.id))
+    : clientes;
+
+  const clientesFiltrados = clientesBase.filter(c =>
     c.nome.toLowerCase().includes(search.toLowerCase()) ||
     (c.cpf && c.cpf.includes(search)) ||
     (c.telefone && c.telefone.includes(search))
@@ -336,6 +384,22 @@ export default function ClientsModal({
                           {formatCurrency(extratoData.totais.limiteDisponivel)}
                         </Text>
                       </View>
+                    </View>
+
+                    {/* Cobrança ativa e recibo via WhatsApp (S08) */}
+                    <View style={styles.whatsRow}>
+                      {extratoData.totais.saldoDevedorAtual > 0 && (
+                        <TouchableOpacity style={styles.btnWhatsApp} onPress={() => handleCobrarWhatsApp(extratoData.cliente.id)}>
+                          <Ionicons name="logo-whatsapp" size={16} color="#FFF" style={{ marginRight: 6 }} />
+                          <Text style={styles.btnWhatsAppText}>Cobrar via WhatsApp</Text>
+                        </TouchableOpacity>
+                      )}
+                      {ultimoPagamento && (
+                        <TouchableOpacity style={[styles.btnWhatsApp, styles.btnWhatsAppOutline]} onPress={() => abrirWhatsApp(ultimoPagamento.linkReciboWhatsApp)}>
+                          <Ionicons name="receipt-outline" size={16} color="#25D366" style={{ marginRight: 6 }} />
+                          <Text style={[styles.btnWhatsAppText, { color: '#1C7C43' }]}>Enviar Recibo</Text>
+                        </TouchableOpacity>
+                      )}
                     </View>
 
                     {/* Formulário para Receber Pagamento de Conta / Amortização */}
@@ -594,6 +658,16 @@ export default function ClientsModal({
                   </TouchableOpacity>
                 </View>
 
+                <TouchableOpacity
+                  style={[styles.chipDevedores, somenteDevedores && styles.chipDevedoresAtivo]}
+                  onPress={() => setSomenteDevedores((v) => !v)}
+                >
+                  <Ionicons name="logo-whatsapp" size={14} color={somenteDevedores ? '#FFF' : '#1C7C43'} style={{ marginRight: 4 }} />
+                  <Text style={[styles.chipDevedoresText, somenteDevedores && { color: '#FFF' }]}>
+                    Cobrança ativa ({filaCobranca.length} devedor{filaCobranca.length === 1 ? '' : 'es'})
+                  </Text>
+                </TouchableOpacity>
+
                 {loading ? (
                   <ActivityIndicator size="large" color="#1E63EC" style={{ marginVertical: 30 }} />
                 ) : clientesFiltrados.length === 0 ? (
@@ -653,6 +727,15 @@ export default function ClientsModal({
                             <Ionicons name="receipt-outline" size={14} color="#1E63EC" style={{ marginRight: 3 }} />
                             <Text style={styles.btnExtratoAcaoText}>Extrato</Text>
                           </TouchableOpacity>
+
+                          {saldo > 0 && (
+                            <TouchableOpacity
+                              style={styles.iconActionBtn}
+                              onPress={() => handleCobrarWhatsApp(cli.id)}
+                            >
+                              <Ionicons name="logo-whatsapp" size={18} color="#25D366" />
+                            </TouchableOpacity>
+                          )}
 
                           <TouchableOpacity
                             style={styles.iconActionBtn}
@@ -1094,6 +1177,51 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: 'bold',
     marginTop: 3
+  },
+  whatsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 10,
+    flexWrap: 'wrap'
+  },
+  btnWhatsApp: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#25D366',
+    borderRadius: 8,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    flexGrow: 1
+  },
+  btnWhatsAppOutline: {
+    backgroundColor: '#FFF',
+    borderWidth: 1,
+    borderColor: '#25D366'
+  },
+  btnWhatsAppText: {
+    color: '#FFF',
+    fontWeight: 'bold',
+    fontSize: 13
+  },
+  chipDevedores: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    borderWidth: 1,
+    borderColor: '#25D366',
+    borderRadius: 16,
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    marginBottom: 10
+  },
+  chipDevedoresAtivo: {
+    backgroundColor: '#25D366'
+  },
+  chipDevedoresText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#1C7C43'
   },
   amortizacaoBox: {
     backgroundColor: '#F8FAFC',

@@ -2,6 +2,8 @@ import { getDb } from '../database/dbInstance';
 import { syncOrEnqueue } from '../database/syncService';
 import { validarDocumento, validarTelefone, formatarDocumento, formatarTelefone } from '../utils/validators';
 import { obterTurnoAtivo, registrarRecebimentoFiadoNoCaixa } from './cashService';
+import { round2, subtractMoney } from '../utils/money';
+import { gerarLinkWhatsApp, montarMensagemCobranca, montarMensagemRecibo, normalizarTelefoneWhatsApp } from '../utils/cobrancaWhatsApp';
 
 // ========================================================
 // SERVIÇO DE CLIENTES E CADERNETA DE FIADO (S01 / S02 / S06)
@@ -472,7 +474,17 @@ export async function fetchExtratoCliente(clienteId, gerenteId, dbOverride = nul
 }
 
 /**
- * Registra o recebimento de pagamento de débito/fiado de um cliente
+ * Crédito disponível para novas compras fiado: teto − saldo devedor (nunca negativo).
+ * Teto 0 significa "sem teto configurado" (validateLimiteFiado não bloqueia).
+ */
+export function calcularLimiteDisponivel(limite, saldoDevedor) {
+  return Math.max(0, subtractMoney(Number(limite) || 0, Number(saldoDevedor) || 0));
+}
+
+/**
+ * Amortização (recebimento parcial ou total) da dívida de fiado com RECOMPOSIÇÃO INSTANTÂNEA
+ * do limite: o saldo devedor cai na mesma transação e o crédito liberado já vale na próxima venda.
+ * Valor acima da dívida é limitado ao saldo devedor; o excedente em dinheiro volta como troco.
  */
 export async function registrarPagamentoDebitoCliente({ clienteId, valor, formaPagamento = 'dinheiro', operadorId, gerenteId, observacoes = null }, dbOverride = null) {
   const db = dbOverride || await getDb();
@@ -503,8 +515,9 @@ export async function registrarPagamentoDebitoCliente({ clienteId, valor, formaP
     }
   }
 
-  const valorEfetivo = Math.min(vNum, saldoAnt);
-  const saldoRes = Math.max(0, Math.round((saldoAnt - valorEfetivo) * 100) / 100);
+  const valorEfetivo = round2(Math.min(vNum, saldoAnt));
+  const saldoRes = Math.max(0, subtractMoney(saldoAnt, valorEfetivo));
+  const troco = subtractMoney(vNum, valorEfetivo);
   const now = new Date().toISOString();
 
   const executar = async () => {
@@ -543,12 +556,113 @@ export async function registrarPagamentoDebitoCliente({ clienteId, valor, formaP
   const updated = await getClienteById(clienteId, gerenteId, db);
   await syncOrEnqueue('Cliente', 'upsert', updated);
 
+  const limite = Number(updated.limite_fiado) || 0;
+  const limiteDisponivelAnterior = calcularLimiteDisponivel(limite, saldoAnt);
+  const limiteDisponivel = calcularLimiteDisponivel(limite, saldoRes);
+
   return {
     cliente: updated,
     valorPago: valorEfetivo,
+    troco,
     saldoAnterior: saldoAnt,
     saldoRestante: saldoRes,
+    quitado: saldoRes === 0,
+    limiteFiado: limite,
+    limiteDisponivelAnterior,
+    limiteDisponivel,
+    limiteRecomposto: subtractMoney(limiteDisponivel, limiteDisponivelAnterior),
     dataPagamento: now,
-    turnoCaixaId: turno ? turno.id : null
+    turnoCaixaId: turno ? turno.id : null,
+    // Recibo pronto para enviar ao cliente pelo WhatsApp (null se não houver telefone válido)
+    linkReciboWhatsApp: gerarLinkWhatsApp(updated.telefone, montarMensagemRecibo({
+      nomeCliente: updated.nome,
+      valorPago: valorEfetivo,
+      saldoRestante: saldoRes,
+      limiteDisponivel,
+      dataPagamento: now
+    }))
   };
+}
+
+/**
+ * Dias desde a última movimentação de fiado (compra a prazo ou pagamento) do cliente.
+ */
+async function diasDesdeUltimaMovimentacaoFiado(db, clienteId, gerenteId, hoje = new Date()) {
+  const rows = await db.getAllAsync(
+    `SELECT MAX(data) as ultima FROM (
+       SELECT v.data_venda as data FROM PagamentoVenda pv JOIN Venda v ON v.id = pv.venda_id
+        WHERE pv.forma_pagamento = 'fiado' AND pv.estornado = 0 AND v.cliente_id = ? AND v.gerente_id = ?
+       UNION ALL
+       SELECT data_pagamento as data FROM PagamentoDebitoCliente WHERE cliente_id = ? AND gerente_id = ?
+     );`,
+    [clienteId, gerenteId, clienteId, gerenteId]
+  );
+  const ultima = rows[0]?.ultima;
+  if (!ultima) return null;
+  return Math.max(0, Math.floor((hoje.getTime() - new Date(ultima).getTime()) / 86400000));
+}
+
+/**
+ * Gera a cobrança ativa via WhatsApp de um cliente com saldo devedor.
+ * @returns {Promise<{ cliente, saldoDevedor, diasEmAberto, telefoneValido, mensagem, link }>}
+ */
+export async function gerarCobrancaWhatsApp(clienteId, gerenteId, { nomeLoja = null } = {}, dbOverride = null) {
+  const db = dbOverride || await getDb();
+  const cliente = await getClienteById(clienteId, gerenteId, db);
+  if (!cliente) throw new Error('Cliente não encontrado.');
+
+  const saldoDevedor = round2(cliente.saldo_devedor);
+  if (saldoDevedor <= 0) throw new Error(`O cliente "${cliente.nome}" não possui saldo devedor para cobrança.`);
+
+  const diasEmAberto = await diasDesdeUltimaMovimentacaoFiado(db, clienteId, gerenteId);
+  const mensagem = montarMensagemCobranca({ nomeCliente: cliente.nome, saldoDevedor, nomeLoja, diasEmAberto });
+  const link = gerarLinkWhatsApp(cliente.telefone, mensagem);
+
+  return {
+    cliente,
+    saldoDevedor,
+    diasEmAberto,
+    telefoneValido: !!normalizarTelefoneWhatsApp(cliente.telefone),
+    mensagem,
+    link
+  };
+}
+
+/**
+ * Fila de cobrança ativa: todos os clientes ativos com saldo devedor, já com o link de
+ * WhatsApp gerado, ordenados por prioridade (bloqueados/teto atingido, maior dívida, mais tempo parado).
+ */
+export async function fetchFilaCobrancaWhatsApp(gerenteId, { nomeLoja = null } = {}, dbOverride = null) {
+  const db = dbOverride || await getDb();
+  const devedores = await db.getAllAsync(
+    `SELECT id FROM Cliente WHERE gerente_id = ? AND ativo = 1 AND saldo_devedor > 0;`,
+    [gerenteId]
+  );
+
+  const fila = [];
+  for (const { id } of devedores) {
+    const c = await gerarCobrancaWhatsApp(id, gerenteId, { nomeLoja }, db);
+    const limite = Number(c.cliente.limite_fiado) || 0;
+    fila.push({
+      clienteId: id,
+      nome: c.cliente.nome,
+      telefone: c.cliente.telefone,
+      saldoDevedor: c.saldoDevedor,
+      limiteFiado: limite,
+      tetoAtingido: limite > 0 && c.saldoDevedor >= limite,
+      bloqueado: c.cliente.bloqueado_inadimplente === 1,
+      diasEmAberto: c.diasEmAberto,
+      telefoneValido: c.telefoneValido,
+      link: c.link,
+      mensagem: c.mensagem
+    });
+  }
+
+  const prioridade = (f) => (f.bloqueado || f.tetoAtingido ? 1 : 0);
+  fila.sort((a, b) =>
+    prioridade(b) - prioridade(a) ||
+    b.saldoDevedor - a.saldoDevedor ||
+    (b.diasEmAberto || 0) - (a.diasEmAberto || 0)
+  );
+  return fila;
 }
