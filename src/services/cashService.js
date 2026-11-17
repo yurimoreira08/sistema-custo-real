@@ -2,6 +2,7 @@ import { getDb } from '../database/dbInstance';
 import { syncOrEnqueue } from '../database/syncService';
 import { round2, sumMoney, subtractMoney, toCents, fromCents } from '../utils/money';
 import { hashPassword } from '../utils/crypto';
+import { calcularTotalContagem, classificarDiferencaCaixa, TOLERANCIA_PADRAO } from '../utils/fechamentoCaixa';
 
 // ========================================================
 // SERVIÇO DE CAIXA, TURNOS, AUDITORIA E BLOQUEIO (S06 / S07)
@@ -103,6 +104,15 @@ export async function initCashTables(db) {
   try {
     await db.execAsync("ALTER TABLE TurnoCaixa ADD COLUMN total_recebimentos_fiado REAL NOT NULL DEFAULT 0.0;");
   } catch (e) {}
+  // S08 — Fechamento cego: contagem física por cédula/moeda e tipificação da diferença
+  for (const ddl of [
+    'ALTER TABLE TurnoCaixa ADD COLUMN contagem_cega_json TEXT;',
+    'ALTER TABLE TurnoCaixa ADD COLUMN tipo_diferenca TEXT;',
+    'ALTER TABLE TurnoCaixa ADD COLUMN classificacao_diferenca TEXT;',
+    'ALTER TABLE TurnoCaixa ADD COLUMN justificativa_diferenca TEXT;',
+  ]) {
+    try { await db.execAsync(ddl); } catch (e) {}
+  }
 
   await migrarCheckMovimentacaoCaixa(db);
   await db.execAsync(`
@@ -406,56 +416,258 @@ export async function registrarSuprimentoSangria({ turnoId, operadorId, tipo, va
 }
 
 /**
- * Fecha e encerra o turno de caixa com auditoria de conferência cega e apuração de sobras/quebras
+ * Fecha o turno com CONFERÊNCIA CEGA e apuração de quebra de caixa (S08).
+ *
+ * O operador informa o físico contado — preferencialmente pela contagem de cédulas/moedas
+ * (`contagemCedulas`, ex.: { '50': 2, '0.25': 4 }) ou pelo total (`saldoInformado`) — sem ver
+ * o saldo contábil. Só depois o sistema compara com o esperado, tipifica (SOBRA/FALTA/CONFERIDO),
+ * classifica a gravidade pela tolerância e exige justificativa quando a divergência é GRAVE.
+ *
+ * @returns {Promise<{ turno, saldoEsperado, saldoInformado, diferenca, situacao, tipo, gravidade,
+ *                     descricao, contagem, comprovanteHash, relatorio }>}
  */
-export async function fecharTurnoCaixa({ turnoId, operadorId, saldoInformado, observacoes = null, gerenteId }, dbOverride = null) {
+export async function fecharTurnoCaixa({
+  turnoId,
+  operadorId,
+  saldoInformado,
+  contagemCedulas = null,
+  justificativaDiferenca = null,
+  tolerancia = TOLERANCIA_PADRAO,
+  observacoes = null,
+  gerenteId
+}, dbOverride = null) {
   const db = dbOverride || await getDb();
   const turno = await obterTurnoPorId(turnoId, gerenteId, db);
   if (!turno) throw new Error('Turno de caixa não encontrado.');
   if (turno.status === 'fechado') throw new Error('Este turno de caixa já foi fechado anteriormente.');
 
-  const sInformado = parseFloat(saldoInformado != null ? saldoInformado : 0);
-  if (isNaN(sInformado) || sInformado < 0) {
-    throw new Error('Informe o saldo físico apurado em dinheiro para fechar o caixa.');
+  // 1. Apura o físico contado (a contagem por cédula tem prioridade sobre o total digitado)
+  let contagem = null;
+  let sInformado;
+  if (contagemCedulas && Object.keys(contagemCedulas).length > 0) {
+    contagem = calcularTotalContagem(contagemCedulas);
+    sInformado = contagem.total;
+    if (saldoInformado != null && saldoInformado !== '' && toCents(saldoInformado) !== toCents(sInformado)) {
+      throw new Error(
+        `O total digitado (R$ ${Number(saldoInformado).toFixed(2)}) não confere com a contagem de cédulas e moedas (R$ ${sInformado.toFixed(2)}).`
+      );
+    }
+  } else {
+    sInformado = parseFloat(saldoInformado != null ? saldoInformado : NaN);
+    if (isNaN(sInformado) || sInformado < 0) {
+      throw new Error('Informe o saldo físico apurado em dinheiro para fechar o caixa.');
+    }
+    sInformado = round2(sInformado);
   }
 
-  const sEsperado = turno.saldo_esperado_dinheiro;
+  // 2. Compara com o contábil e tipifica a diferença
+  const sEsperado = round2(turno.saldo_esperado_dinheiro);
   const diferenca = subtractMoney(sInformado, sEsperado); // Positivo = sobra, negativo = falta/quebra
+  const classificacao = classificarDiferencaCaixa(diferenca, tolerancia);
+  const justificativa = (justificativaDiferenca || '').trim() || null;
+
+  if (classificacao.exigeJustificativa && !justificativa) {
+    throw new Error(
+      `${classificacao.tipo === 'SOBRA' ? 'Sobra' : 'Falta'} de R$ ${classificacao.valorAbsoluto.toFixed(2)} acima do limite de tolerância. Informe a justificativa da diferença para encerrar o turno.`
+    );
+  }
+
   const now = new Date().toISOString();
+  const contagemJson = contagem ? JSON.stringify(contagem.itens) : null;
 
-  await db.runAsync(
-    `UPDATE TurnoCaixa 
-     SET status = 'fechado', saldo_fechamento_informado = ?, diferenca_fechamento = ?, 
-         observacoes = COALESCE(?, observacoes), data_fechamento = ?
-     WHERE id = ? AND gerente_id = ?;`,
-    [sInformado, diferenca, observacoes, now, turnoId, gerenteId]
-  );
+  // 3. Movimentação de FECHAMENTO assinada (SHA-256), como as demais operações de gaveta
+  const mov = {
+    turno_caixa_id: turnoId,
+    gerente_id: gerenteId,
+    operador_id: operadorId,
+    tipo_operacao: 'FECHAMENTO',
+    valor: sInformado,
+    saldo_apos: sInformado,
+    origem_referencia: `FECHAMENTO-${turnoId}`,
+    justificativa:
+      `Fechamento cego. Esperado: R$ ${sEsperado.toFixed(2)}, Contado: R$ ${sInformado.toFixed(2)}, ` +
+      `Diferença: R$ ${diferenca.toFixed(2)} — ${classificacao.descricao}` +
+      (justificativa ? `. Justificativa: ${justificativa}` : ''),
+    data_movimentacao: now
+  };
+  const { hash, codigoAutenticacao } = gerarAssinaturaMovimentacao(mov);
 
-  await db.runAsync(
-    `INSERT INTO MovimentacaoCaixa (
-      turno_caixa_id, gerente_id, operador_id, tipo_operacao, forma_pagamento, valor, saldo_apos, origem_referencia, justificativa, data_movimentacao
-    ) VALUES (?, ?, ?, 'FECHAMENTO', 'dinheiro', ?, ?, ?, ?, ?);`,
-    [
-      turnoId, 
-      gerenteId, 
-      operadorId, 
-      sInformado, 
-      sInformado, 
-      `FECHAMENTO-${turnoId}`, 
-      `Fechamento de caixa. Esperado: R$ ${sEsperado.toFixed(2)}, Informado: R$ ${sInformado.toFixed(2)}, Diferença: R$ ${diferenca.toFixed(2)}`, 
-      now
-    ]
-  );
+  const executar = async () => {
+    await db.runAsync(
+      `UPDATE TurnoCaixa
+       SET status = 'fechado', saldo_fechamento_informado = ?, diferenca_fechamento = ?,
+           contagem_cega_json = ?, tipo_diferenca = ?, classificacao_diferenca = ?, justificativa_diferenca = ?,
+           observacoes = COALESCE(?, observacoes), data_fechamento = ?
+       WHERE id = ? AND gerente_id = ?;`,
+      [sInformado, diferenca, contagemJson, classificacao.tipo, classificacao.gravidade, justificativa, observacoes, now, turnoId, gerenteId]
+    );
+
+    await db.runAsync(
+      `INSERT INTO MovimentacaoCaixa (
+        turno_caixa_id, gerente_id, operador_id, tipo_operacao, forma_pagamento, valor, saldo_apos, origem_referencia, justificativa, comprovante_hash, assinatura_digital, data_movimentacao
+      ) VALUES (?, ?, ?, 'FECHAMENTO', 'dinheiro', ?, ?, ?, ?, ?, ?, ?);`,
+      [turnoId, gerenteId, operadorId, sInformado, sInformado, mov.origem_referencia, mov.justificativa, codigoAutenticacao, hash, now]
+    );
+  };
+
+  if (typeof db.withTransactionAsync === 'function') {
+    await db.withTransactionAsync(executar);
+  } else {
+    await executar();
+  }
 
   const encerrado = await obterTurnoPorId(turnoId, gerenteId, db);
   await syncOrEnqueue('TurnoCaixa', 'upsert', encerrado);
+
+  const relatorio = await gerarRelatorioFechamento(turnoId, gerenteId, db);
   return {
     turno: encerrado,
     saldoEsperado: sEsperado,
     saldoInformado: sInformado,
     diferenca,
-    situacao: diferenca === 0 ? 'CONFERIDO_EXATO' : diferenca > 0 ? 'SOBRA_DE_CAIXA' : 'QUEBRA_DE_CAIXA'
+    situacao: classificacao.situacao,
+    tipo: classificacao.tipo,
+    gravidade: classificacao.gravidade,
+    descricao: classificacao.descricao,
+    contagem,
+    comprovanteHash: codigoAutenticacao,
+    relatorio
   };
+}
+
+/**
+ * Relatório detalhado de encerramento do turno (S08): composição do saldo contábil,
+ * vendas por forma de pagamento, movimentações por tipo, conferência cega e auditoria.
+ * Funciona também para turnos ainda abertos (sem o bloco de conferência).
+ */
+export async function gerarRelatorioFechamento(turnoId, gerenteId, dbOverride = null) {
+  const db = dbOverride || await getDb();
+  const rows = await db.getAllAsync(
+    `SELECT tc.*, u.nome as operador_nome
+     FROM TurnoCaixa tc LEFT JOIN Usuario u ON u.id = tc.operador_id
+     WHERE tc.id = ? AND tc.gerente_id = ? LIMIT 1;`,
+    [turnoId, gerenteId]
+  );
+  const turno = rows[0];
+  if (!turno) throw new Error('Turno de caixa não encontrado.');
+
+  // Movimentações agrupadas por tipo (quantidade e total)
+  const movsPorTipo = await db.getAllAsync(
+    `SELECT tipo_operacao as tipo, COUNT(*) as quantidade, ROUND(COALESCE(SUM(valor), 0), 2) as total
+     FROM MovimentacaoCaixa WHERE turno_caixa_id = ? AND gerente_id = ?
+     GROUP BY tipo_operacao ORDER BY tipo_operacao;`,
+    [turnoId, gerenteId]
+  );
+  const totalPorTipo = (t) => round2(movsPorTipo.find((m) => m.tipo === t)?.total || 0);
+
+  // Vendas do turno e recebimentos por forma de pagamento (exceto estornados)
+  const vendas = await db.getAllAsync(
+    `SELECT COUNT(*) as quantidade, ROUND(COALESCE(SUM(valor_total), 0), 2) as total
+     FROM Venda WHERE turno_caixa_id = ? AND gerente_id = ? AND COALESCE(status, 'concluida') != 'cancelada';`,
+    [turnoId, gerenteId]
+  );
+  const porForma = await db.getAllAsync(
+    `SELECT pv.forma_pagamento as forma, COUNT(*) as quantidade, ROUND(SUM(pv.valor_bruto), 2) as total
+     FROM PagamentoVenda pv JOIN Venda v ON v.id = pv.venda_id
+     WHERE v.turno_caixa_id = ? AND v.gerente_id = ? AND pv.estornado = 0
+     GROUP BY pv.forma_pagamento ORDER BY total DESC;`,
+    [turnoId, gerenteId]
+  );
+
+  const inicio = new Date(turno.data_abertura).getTime();
+  const fim = turno.data_fechamento ? new Date(turno.data_fechamento).getTime() : Date.now();
+  const auditoria = await auditarTurnoCaixa(turnoId, gerenteId, db);
+
+  let conferencia = null;
+  if (turno.status === 'fechado') {
+    const classificacao = classificarDiferencaCaixa(turno.diferenca_fechamento || 0);
+    let contagemItens = [];
+    try { contagemItens = turno.contagem_cega_json ? JSON.parse(turno.contagem_cega_json) : []; } catch (e) {}
+    conferencia = {
+      saldoEsperado: round2(turno.saldo_esperado_dinheiro),
+      saldoContado: round2(turno.saldo_fechamento_informado),
+      diferenca: round2(turno.diferenca_fechamento),
+      tipo: turno.tipo_diferenca || classificacao.tipo,
+      gravidade: turno.classificacao_diferenca || classificacao.gravidade,
+      descricao: classificacao.descricao,
+      justificativa: turno.justificativa_diferenca || null,
+      contagemPorCedula: contagemItens,
+      contagemDetalhada: contagemItens.length > 0
+    };
+  }
+
+  return {
+    turnoId: turno.id,
+    status: turno.status,
+    operadorId: turno.operador_id,
+    operadorNome: turno.operador_nome || 'Operador',
+    dataAbertura: turno.data_abertura,
+    dataFechamento: turno.data_fechamento,
+    duracaoMinutos: Math.max(0, Math.round((fim - inicio) / 60000)),
+    composicaoSaldo: {
+      fundoTrocoInicial: round2(turno.fundo_troco_inicial),
+      vendasDinheiro: round2(turno.total_vendas_dinheiro),
+      suprimentos: round2(turno.total_suprimentos),
+      recebimentosFiado: round2(turno.total_recebimentos_fiado || 0),
+      sangrias: round2(turno.total_sangrias),
+      estornos: totalPorTipo('ESTORNO'),
+      saldoEsperado: round2(turno.saldo_esperado_dinheiro)
+    },
+    vendas: {
+      quantidade: vendas[0]?.quantidade || 0,
+      total: round2(vendas[0]?.total || 0),
+      totalOutrosMeios: round2(turno.total_vendas_outros),
+      porFormaPagamento: porForma.map((f) => ({ ...f, total: round2(f.total) }))
+    },
+    movimentacoesPorTipo: movsPorTipo,
+    conferencia,
+    auditoria: {
+      conforme: auditoria.conforme,
+      totalMovimentacoes: auditoria.totalMovimentacoes,
+      divergencias: auditoria.divergencias
+    },
+    observacoes: turno.observacoes || null
+  };
+}
+
+/**
+ * Converte o relatório de encerramento em texto simples (para compartilhar ou imprimir).
+ */
+export function formatarRelatorioFechamentoTexto(rel) {
+  const m = (v) => `R$ ${Number(v || 0).toFixed(2).replace('.', ',')}`;
+  const c = rel.composicaoSaldo;
+  const linhas = [
+    `RELATÓRIO DE FECHAMENTO — TURNO #${rel.turnoId}`,
+    `Operador: ${rel.operadorNome}`,
+    `Abertura: ${new Date(rel.dataAbertura).toLocaleString('pt-BR')}`,
+    rel.dataFechamento ? `Fechamento: ${new Date(rel.dataFechamento).toLocaleString('pt-BR')}` : 'Turno ainda aberto',
+    `Duração: ${Math.floor(rel.duracaoMinutos / 60)}h${String(rel.duracaoMinutos % 60).padStart(2, '0')}`,
+    '',
+    'COMPOSIÇÃO DO SALDO CONTÁBIL (DINHEIRO)',
+    `(+) Fundo de troco: ${m(c.fundoTrocoInicial)}`,
+    `(+) Vendas em dinheiro (líq. de estornos): ${m(c.vendasDinheiro)}`,
+    `(+) Suprimentos: ${m(c.suprimentos)}`,
+    `(+) Recebimentos de fiado: ${m(c.recebimentosFiado)}`,
+    `(−) Sangrias: ${m(c.sangrias)}`,
+    `    Estornos já deduzidos: ${m(c.estornos)}`,
+    `(=) Saldo esperado: ${m(c.saldoEsperado)}`,
+    '',
+    `VENDAS: ${rel.vendas.quantidade} venda(s) — ${m(rel.vendas.total)}`,
+    ...rel.vendas.porFormaPagamento.map((f) => `  • ${f.forma}: ${m(f.total)} (${f.quantidade})`),
+  ];
+  if (rel.conferencia) {
+    const k = rel.conferencia;
+    linhas.push('', 'CONFERÊNCIA CEGA');
+    for (const it of k.contagemPorCedula) linhas.push(`  ${it.rotulo} × ${it.quantidade} = ${m(it.subtotal)}`);
+    linhas.push(
+      `Contado (físico): ${m(k.saldoContado)}`,
+      `Esperado (contábil): ${m(k.saldoEsperado)}`,
+      `Diferença: ${m(k.diferenca)} — ${k.descricao}`
+    );
+    if (k.justificativa) linhas.push(`Justificativa: ${k.justificativa}`);
+  }
+  linhas.push('', `Auditoria das movimentações: ${rel.auditoria.conforme ? 'CONFORME' : 'DIVERGÊNCIA'} (${rel.auditoria.totalMovimentacoes} mov.)`);
+  return linhas.join('\n');
 }
 
 /**
@@ -743,7 +955,8 @@ export async function auditarTurnoCaixa(turnoId, gerenteId, dbOverride = null) {
       saldoReconstruido = subtractMoney(saldoReconstruido, m.valor);
     }
 
-    if (Math.abs(saldoReconstruido - m.saldo_apos) > 0.01) {
+    // FECHAMENTO guarda o físico contado em saldo_apos (não o contábil): fica fora da comparação
+    if (m.tipo_operacao !== 'FECHAMENTO' && Math.abs(saldoReconstruido - m.saldo_apos) > 0.01) {
       divergencias.push({
         movId: m.id,
         tipo: m.tipo_operacao,

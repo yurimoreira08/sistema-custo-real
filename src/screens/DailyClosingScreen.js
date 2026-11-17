@@ -163,6 +163,7 @@ export default function DailyClosingScreen() {
         gerenteId={user?.gerente_id}
         usuarioId={user?.id}
         usuarioNome={user?.nome}
+        exibirSaldoEsperado={user?.cargo === 'gerente'}
         onClose={() => setCashModalVisible(false)}
         onShiftChange={() => load()}
       />

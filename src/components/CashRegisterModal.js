@@ -10,7 +10,8 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
-  Alert
+  Alert,
+  Share
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
@@ -21,14 +22,27 @@ import {
   fecharTurnoCaixa,
   registrarSuprimentoSangria,
   auditarTurnoCaixa,
-  obterComprovanteMovimentacao
+  obterComprovanteMovimentacao,
+  formatarRelatorioFechamentoTexto
 } from '../services/cashService';
+import { DENOMINACOES_BRL, calcularTotalContagem } from '../utils/fechamentoCaixa';
+
+// Cores e rótulos da tipificação da diferença no fechamento cego
+const COR_TIPO_DIFERENCA = { CONFERIDO: '#276749', SOBRA: '#2B6CB0', FALTA: '#C53030' };
+const ROTULO_GRAVIDADE = {
+  EXATO: 'Exato',
+  DENTRO_TOLERANCIA: 'Dentro da tolerância',
+  LEVE: 'Divergência leve',
+  GRAVE: 'Divergência grave'
+};
 
 export default function CashRegisterModal({
   visible,
   gerenteId,
   usuarioId,
   usuarioNome = 'Operador',
+  // Conferência cega: só a gerência vê o saldo contábil esperado antes do fechamento
+  exibirSaldoEsperado = false,
   onClose,
   onShiftChange
 }) {
@@ -50,6 +64,8 @@ export default function CashRegisterModal({
   const [saldoFechamento, setSaldoFechamento] = useState('');
   const [obsFechamento, setObsFechamento] = useState('');
   const [resultadoFechamento, setResultadoFechamento] = useState(null);
+  const [contagemCedulas, setContagemCedulas] = useState({}); // { '50': '2', '0.25': '4' }
+  const [justificativaDiferenca, setJustificativaDiferenca] = useState('');
 
   const [auditoriaData, setAuditoriaData] = useState(null);
   const [comprovanteAtivo, setComprovanteAtivo] = useState(null);
@@ -228,11 +244,28 @@ export default function CashRegisterModal({
     setAbaAtiva('comprovante');
   };
 
+  // Converte os campos digitados em quantidades inteiras (vazio = 0)
+  const contagemNumerica = () => {
+    const out = {};
+    for (const [valor, qtd] of Object.entries(contagemCedulas)) {
+      const n = parseInt(qtd, 10);
+      if (!isNaN(n) && n > 0) out[valor] = n;
+    }
+    return out;
+  };
+
+  const totalContado = (() => {
+    try { return calcularTotalContagem(contagemNumerica()).total; } catch (e) { return 0; }
+  })();
+
   const handleFecharCaixa = async () => {
     setErroMsg('');
-    const saldoInf = parseFloat(saldoFechamento.replace(',', '.'));
-    if (isNaN(saldoInf) || saldoInf < 0) {
-      setErroMsg('Informe o saldo físico apurado em dinheiro para fechar o caixa.');
+    const contagem = contagemNumerica();
+    const usaContagem = Object.keys(contagem).length > 0;
+    const saldoInf = parseFloat((saldoFechamento || '').replace(',', '.'));
+
+    if (!usaContagem && (isNaN(saldoInf) || saldoInf < 0)) {
+      setErroMsg('Conte as cédulas e moedas da gaveta (ou informe o total contado) para fechar o caixa.');
       return;
     }
 
@@ -241,18 +274,32 @@ export default function CashRegisterModal({
       const res = await fecharTurnoCaixa({
         turnoId: turno.id,
         operadorId: usuarioId,
-        saldoInformado: saldoInf,
+        contagemCedulas: usaContagem ? contagem : null,
+        saldoInformado: usaContagem ? null : saldoInf,
+        justificativaDiferenca: justificativaDiferenca.trim() || null,
         observacoes: obsFechamento.trim() || null,
         gerenteId
       });
       setResultadoFechamento(res);
       setTurno(null);
+      setContagemCedulas({});
+      setSaldoFechamento('');
+      setJustificativaDiferenca('');
       setSucessoMsg(`Turno #${res.turno.id} encerrado com sucesso!`);
       if (onShiftChange) onShiftChange(null);
     } catch (e) {
       setErroMsg(e.message || 'Erro ao fechar caixa.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleCompartilharRelatorio = async () => {
+    if (!resultadoFechamento?.relatorio) return;
+    try {
+      await Share.share({ message: formatarRelatorioFechamentoTexto(resultadoFechamento.relatorio) });
+    } catch (e) {
+      setErroMsg('Não foi possível compartilhar o relatório.');
     }
   };
 
@@ -338,7 +385,7 @@ export default function CashRegisterModal({
               </TouchableOpacity>
             )}
 
-            {turno && (
+            {turno && exibirSaldoEsperado && (
               <TouchableOpacity
                 style={[styles.tabBtn, abaAtiva === 'auditoria' && styles.tabBtnActive]}
                 onPress={handleCarregarAuditoria}
@@ -408,7 +455,17 @@ export default function CashRegisterModal({
                       </View>
                     </View>
 
-                    {/* Resumo Financeiro do Turno */}
+                    {/* Resumo Financeiro do Turno (oculto para o operador: conferência cega) */}
+                    {!exibirSaldoEsperado ? (
+                      <View style={styles.infoAlert}>
+                        <Ionicons name="eye-off-outline" size={20} color="#2B6CB0" />
+                        <Text style={styles.infoAlertText}>
+                          Conferência cega ativa: o saldo esperado do caixa fica oculto até o fechamento.
+                          No encerramento, conte as cédulas e moedas da gaveta.
+                        </Text>
+                      </View>
+                    ) : (
+                    <>
                     <View style={styles.gridCards}>
                       <View style={styles.cardItem}>
                         <Text style={styles.cardLabel}>Fundo Inicial</Text>
@@ -447,6 +504,8 @@ export default function CashRegisterModal({
                         Vendas em outros meios (PIX, Cartão): {formatCurrency(turno.total_vendas_outros)}
                       </Text>
                     </View>
+                    </>
+                    )}
 
                     {/* Ações de Bloqueio / Desbloqueio */}
                     <View style={styles.actionsSection}>
@@ -570,25 +629,65 @@ export default function CashRegisterModal({
                   </View>
                 )}
 
-                {/* ABA: ENCERRAMENTO DE TURNO */}
+                {/* ABA: ENCERRAMENTO DE TURNO — FECHAMENTO CEGO (S08) */}
                 {abaAtiva === 'fechamento' && turno && (
                   <View style={styles.formBox}>
                     <View style={styles.warningAlert}>
-                      <Ionicons name="alert" size={20} color="#C05621" />
+                      <Ionicons name="eye-off" size={20} color="#C05621" />
                       <Text style={styles.warningAlertText}>
-                        Conferência de Fechamento de Caixa: conte todas as notas e moedas físicas na gaveta
-                        e informe o valor exato para o cálculo de sobras ou quebras.
+                        Fechamento cego: conte as cédulas e moedas da gaveta sem consultar o sistema.
+                        O saldo esperado só é revelado após a confirmação, com a apuração de sobras e faltas.
                       </Text>
                     </View>
 
-                    <Text style={styles.inputLabel}>Saldo Físico Apurado em Dinheiro (R$):</Text>
+                    <Text style={styles.inputLabel}>Contagem física por cédula / moeda (quantidade):</Text>
+                    <View style={styles.contagemGrid}>
+                      {DENOMINACOES_BRL.map((d) => {
+                        const chave = String(d.valor);
+                        const qtd = parseInt(contagemCedulas[chave], 10) || 0;
+                        return (
+                          <View key={chave} style={[styles.contagemItem, d.tipo === 'moeda' && styles.contagemItemMoeda]}>
+                            <Text style={styles.contagemRotulo}>{d.rotulo}</Text>
+                            <TextInput
+                              style={styles.contagemInput}
+                              placeholder="0"
+                              placeholderTextColor="#A0AEC0"
+                              keyboardType="number-pad"
+                              value={contagemCedulas[chave] || ''}
+                              onChangeText={(t) => setContagemCedulas((prev) => ({ ...prev, [chave]: t.replace(/[^0-9]/g, '') }))}
+                            />
+                            <Text style={styles.contagemSubtotal}>{qtd > 0 ? formatCurrency(qtd * d.valor) : '—'}</Text>
+                          </View>
+                        );
+                      })}
+                    </View>
+
+                    <View style={styles.totalContadoBox}>
+                      <Text style={styles.totalContadoLabel}>TOTAL CONTADO NA GAVETA</Text>
+                      <Text style={styles.totalContadoValor}>{formatCurrency(totalContado)}</Text>
+                    </View>
+
+                    {totalContado === 0 && (
+                      <>
+                        <Text style={styles.inputLabel}>Ou informe apenas o total contado (R$):</Text>
+                        <TextInput
+                          style={styles.textInputBig}
+                          placeholder="Ex: 250.00"
+                          placeholderTextColor="#A0AEC0"
+                          keyboardType="numeric"
+                          value={saldoFechamento}
+                          onChangeText={setSaldoFechamento}
+                        />
+                      </>
+                    )}
+
+                    <Text style={styles.inputLabel}>Justificativa de diferença (obrigatória se a divergência for grave):</Text>
                     <TextInput
-                      style={styles.textInputBig}
-                      placeholder="Ex: 250.00"
+                      style={styles.textInput}
+                      placeholder="Ex: Troco devolvido a maior, nota rasgada recolhida..."
                       placeholderTextColor="#A0AEC0"
-                      keyboardType="numeric"
-                      value={saldoFechamento}
-                      onChangeText={setSaldoFechamento}
+                      value={justificativaDiferenca}
+                      onChangeText={setJustificativaDiferenca}
                     />
 
                     <Text style={styles.inputLabel}>Observações do Fechamento (Opcional):</Text>
@@ -602,25 +701,70 @@ export default function CashRegisterModal({
 
                     <TouchableOpacity style={styles.btnEncerrar} onPress={handleFecharCaixa}>
                       <Ionicons name="checkmark-done" size={18} color="#FFF" style={{ marginRight: 8 }} />
-                      <Text style={styles.btnPrincipalText}>Encerrar e Fechar Turno</Text>
+                      <Text style={styles.btnPrincipalText}>Confirmar Contagem e Fechar Turno</Text>
                     </TouchableOpacity>
                   </View>
                 )}
 
-                {/* Resultado pós-fechamento */}
-                {resultadoFechamento && (
-                  <View style={styles.resultadoCard}>
-                    <Text style={styles.resultadoTitle}>Resumo do Fechamento de Caixa</Text>
-                    <Text style={styles.resultadoRow}>Saldo Esperado: {formatCurrency(resultadoFechamento.saldoEsperado)}</Text>
-                    <Text style={styles.resultadoRow}>Saldo Físico Informado: {formatCurrency(resultadoFechamento.saldoInformado)}</Text>
-                    <Text style={[
-                      styles.resultadoDiferenca,
-                      resultadoFechamento.diferenca === 0 ? { color: '#276749' } : { color: '#C53030' }
-                    ]}>
-                      Diferença: {formatCurrency(resultadoFechamento.diferenca)} ({resultadoFechamento.situacao})
-                    </Text>
-                  </View>
-                )}
+                {/* Relatório detalhado de encerramento (após o fechamento) */}
+                {resultadoFechamento && (() => {
+                  const r = resultadoFechamento;
+                  const rel = r.relatorio;
+                  const cor = COR_TIPO_DIFERENCA[r.tipo] || '#2D3748';
+                  return (
+                    <View style={styles.resultadoCard}>
+                      <Text style={styles.resultadoTitle}>Relatório de Encerramento — Turno #{rel.turnoId}</Text>
+
+                      <View style={[styles.quebraBanner, { borderColor: cor }]}>
+                        <Text style={[styles.quebraTipo, { color: cor }]}>
+                          {r.tipo === 'CONFERIDO' ? 'CAIXA CONFERIDO' : r.tipo === 'SOBRA' ? 'SOBRA DE CAIXA' : 'FALTA (QUEBRA) DE CAIXA'}
+                        </Text>
+                        <Text style={[styles.quebraValor, { color: cor }]}>{formatCurrency(r.diferenca)}</Text>
+                        <Text style={styles.quebraGravidade}>{ROTULO_GRAVIDADE[r.gravidade]}</Text>
+                      </View>
+
+                      <Text style={styles.resultadoRow}>Contado (físico): {formatCurrency(r.saldoInformado)}</Text>
+                      <Text style={styles.resultadoRow}>Esperado (contábil): {formatCurrency(r.saldoEsperado)}</Text>
+                      {rel.conferencia?.justificativa ? (
+                        <Text style={styles.resultadoRow}>Justificativa: {rel.conferencia.justificativa}</Text>
+                      ) : null}
+
+                      {rel.conferencia?.contagemDetalhada && (
+                        <>
+                          <Text style={styles.relSecao}>Contagem cega</Text>
+                          {rel.conferencia.contagemPorCedula.map((c) => (
+                            <Text key={c.valor} style={styles.resultadoRow}>
+                              {c.rotulo} × {c.quantidade} = {formatCurrency(c.subtotal)}
+                            </Text>
+                          ))}
+                        </>
+                      )}
+
+                      <Text style={styles.relSecao}>Composição do saldo contábil</Text>
+                      <Text style={styles.resultadoRow}>(+) Fundo de troco: {formatCurrency(rel.composicaoSaldo.fundoTrocoInicial)}</Text>
+                      <Text style={styles.resultadoRow}>(+) Vendas em dinheiro: {formatCurrency(rel.composicaoSaldo.vendasDinheiro)}</Text>
+                      <Text style={styles.resultadoRow}>(+) Suprimentos: {formatCurrency(rel.composicaoSaldo.suprimentos)}</Text>
+                      <Text style={styles.resultadoRow}>(+) Recebimentos de fiado: {formatCurrency(rel.composicaoSaldo.recebimentosFiado)}</Text>
+                      <Text style={styles.resultadoRow}>(−) Sangrias: {formatCurrency(rel.composicaoSaldo.sangrias)}</Text>
+                      <Text style={styles.resultadoRow}>Estornos já deduzidos: {formatCurrency(rel.composicaoSaldo.estornos)}</Text>
+
+                      <Text style={styles.relSecao}>Vendas do turno ({rel.vendas.quantidade}) — {formatCurrency(rel.vendas.total)}</Text>
+                      {rel.vendas.porFormaPagamento.map((f) => (
+                        <Text key={f.forma} style={styles.resultadoRow}>• {f.forma}: {formatCurrency(f.total)} ({f.quantidade})</Text>
+                      ))}
+
+                      <Text style={[styles.resultadoRow, { marginTop: 8, fontWeight: 'bold', color: rel.auditoria.conforme ? '#276749' : '#C53030' }]}>
+                        Auditoria das movimentações: {rel.auditoria.conforme ? '✓ conforme' : '⚠ divergência'} ({rel.auditoria.totalMovimentacoes} mov.)
+                      </Text>
+                      <Text style={styles.resultadoRow}>Autenticação: {r.comprovanteHash}</Text>
+
+                      <TouchableOpacity style={styles.btnCompartilhar} onPress={handleCompartilharRelatorio}>
+                        <Ionicons name="share-social-outline" size={16} color="#FFF" style={{ marginRight: 6 }} />
+                        <Text style={styles.btnTextWhite}>Compartilhar Relatório</Text>
+                      </TouchableOpacity>
+                    </View>
+                  );
+                })()}
 
                 {/* ABA: AUDITORIA DO TURNO */}
                 {abaAtiva === 'auditoria' && auditoriaData && (
@@ -716,19 +860,21 @@ export default function CashRegisterModal({
                         </Text>
                       </View>
 
-                      {comprovanteAtivo.saldoAnterior != null && (
+                      {exibirSaldoEsperado && comprovanteAtivo.saldoAnterior != null && (
                         <View style={styles.receiptRow}>
                           <Text style={styles.receiptFieldLabel}>Saldo Anterior:</Text>
                           <Text style={styles.receiptFieldValue}>{formatCurrency(comprovanteAtivo.saldoAnterior)}</Text>
                         </View>
                       )}
 
+                      {exibirSaldoEsperado && (
                       <View style={styles.receiptRow}>
                         <Text style={styles.receiptFieldLabel}>Novo Saldo da Gaveta:</Text>
                         <Text style={[styles.receiptFieldValue, { fontWeight: 'bold', color: '#1A202C' }]}>
                           {formatCurrency(comprovanteAtivo.saldoApos)}
                         </Text>
                       </View>
+                      )}
 
                       <View style={styles.receiptJustBox}>
                         <Text style={styles.receiptJustLabel}>Motivo / Justificativa:</Text>
@@ -1143,6 +1289,100 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#4A5568',
     marginTop: 2
+  },
+  contagemGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 4
+  },
+  contagemItem: {
+    width: '31.5%',
+    backgroundColor: '#F0FFF4',
+    borderWidth: 1,
+    borderColor: '#C6F6D5',
+    borderRadius: 8,
+    padding: 6,
+    alignItems: 'center'
+  },
+  contagemItemMoeda: {
+    backgroundColor: '#FFFAF0',
+    borderColor: '#FEEBC8'
+  },
+  contagemRotulo: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#2D3748'
+  },
+  contagemInput: {
+    width: '100%',
+    borderWidth: 1,
+    borderColor: '#CBD5E0',
+    borderRadius: 6,
+    paddingVertical: 4,
+    marginVertical: 4,
+    textAlign: 'center',
+    fontSize: 15,
+    color: '#1E63EC',
+    backgroundColor: '#FFF'
+  },
+  contagemSubtotal: {
+    fontSize: 10,
+    color: '#718096'
+  },
+  totalContadoBox: {
+    backgroundColor: '#EBF8FF',
+    borderRadius: 8,
+    padding: 10,
+    marginTop: 10,
+    alignItems: 'center'
+  },
+  totalContadoLabel: {
+    fontSize: 11,
+    fontWeight: 'bold',
+    color: '#2B6CB0'
+  },
+  totalContadoValor: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: '#1E63EC'
+  },
+  quebraBanner: {
+    borderWidth: 2,
+    borderRadius: 10,
+    padding: 10,
+    alignItems: 'center',
+    marginVertical: 8,
+    backgroundColor: '#FFF'
+  },
+  quebraTipo: {
+    fontSize: 13,
+    fontWeight: 'bold'
+  },
+  quebraValor: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    marginTop: 2
+  },
+  quebraGravidade: {
+    fontSize: 11,
+    color: '#4A5568',
+    marginTop: 2
+  },
+  relSecao: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#2D3748',
+    marginTop: 10
+  },
+  btnCompartilhar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#1E63EC',
+    borderRadius: 8,
+    paddingVertical: 10,
+    marginTop: 12
   },
   resultadoDiferenca: {
     fontSize: 14,

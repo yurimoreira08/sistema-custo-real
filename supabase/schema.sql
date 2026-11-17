@@ -321,6 +321,10 @@ CREATE TABLE IF NOT EXISTS "TurnoCaixa" (
   saldo_esperado_dinheiro    NUMERIC(10,2) NOT NULL DEFAULT 0.00,
   saldo_fechamento_informado NUMERIC(10,2),
   diferenca_fechamento       NUMERIC(10,2),
+  contagem_cega_json         TEXT,
+  tipo_diferenca             TEXT          CHECK (tipo_diferenca IN ('CONFERIDO', 'SOBRA', 'FALTA')),
+  classificacao_diferenca    TEXT          CHECK (classificacao_diferenca IN ('EXATO', 'DENTRO_TOLERANCIA', 'LEVE', 'GRAVE')),
+  justificativa_diferenca    TEXT,
   motivo_bloqueio            TEXT,
   observacoes                TEXT,
   data_abertura              TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
@@ -452,6 +456,11 @@ ALTER TABLE "TurnoCaixa" ADD COLUMN IF NOT EXISTS total_recebimentos_fiado NUMER
 ALTER TABLE "MovimentacaoCaixa" DROP CONSTRAINT IF EXISTS "MovimentacaoCaixa_tipo_operacao_check";
 ALTER TABLE "MovimentacaoCaixa" ADD CONSTRAINT "MovimentacaoCaixa_tipo_operacao_check"
   CHECK (tipo_operacao IN ('ABERTURA', 'VENDA', 'SANGRIA', 'SUPRIMENTO', 'BLOQUEIO', 'DESBLOQUEIO', 'FECHAMENTO', 'ESTORNO', 'RECEBIMENTO_FIADO'));
+-- Fechamento cego e quebra de caixa (S08)
+ALTER TABLE "TurnoCaixa" ADD COLUMN IF NOT EXISTS contagem_cega_json TEXT;
+ALTER TABLE "TurnoCaixa" ADD COLUMN IF NOT EXISTS tipo_diferenca TEXT;
+ALTER TABLE "TurnoCaixa" ADD COLUMN IF NOT EXISTS classificacao_diferenca TEXT;
+ALTER TABLE "TurnoCaixa" ADD COLUMN IF NOT EXISTS justificativa_diferenca TEXT;
 -- Sincronização de Cliente (S06): colunas que o app envia
 ALTER TABLE "Cliente" ADD COLUMN IF NOT EXISTS email TEXT;
 ALTER TABLE "Cliente" ADD COLUMN IF NOT EXISTS bloqueado_inadimplente INTEGER NOT NULL DEFAULT 0;
