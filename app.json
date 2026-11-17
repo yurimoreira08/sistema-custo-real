@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "LucroCerto",
-    "slug": "sitema-custo-real",
+    "slug": "lucrocerto-custo-real",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/logo_lucrocerto.png",
@@ -10,7 +10,7 @@
       "supportsTablet": true
     },
     "android": {
-      "package": "com.yurimoreira08.lucrocerto",
+      "package": "com.yurimoreira08.lucrocerto.custoreal",
       "adaptiveIcon": {
         "foregroundImage": "./assets/logo_lucrocerto.png",
         "backgroundColor": "#ffffff"
@@ -28,7 +28,7 @@
       "supabaseUrl": "https://oshesvkmupssuivhpntd.supabase.co",
       "supabaseAnonKey": "sb_publishable_ewpiWouTZfUXYWwavUCUqQ_pA4NFVyY",
       "eas": {
-        "projectId": "f6f01b2e-da00-4d8e-80b2-ab6677359826"
+        "projectId": "5f25eb80-2c67-4c83-a896-c57b17f4f3c0"
       }
     },
     "plugins": [
